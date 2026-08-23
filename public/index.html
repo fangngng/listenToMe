@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ListenToMe · AI 朗读演讲教练</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>🎧 ListenToMe</h1>
+  <p>聆听你的朗读与演讲，指出优点与不足</p>
+</header>
+
+<div class="layout">
+<main>
+  <!-- 练习面板 -->
+  <section class="card" id="practiceCard">
+    <div class="mode-tabs">
+      <button class="mode-tab active" data-mode="read">📖 朗读练习</button>
+      <button class="mode-tab" data-mode="speech">🎤 演讲练习</button>
+      <button class="mode-tab" data-mode="general">💬 泛用点评</button>
+    </div>
+    <p class="mode-desc" id="modeDesc"></p>
+
+    <div id="refWrap" class="field">
+      <label>参考文本（粘贴要朗读的内容）<span id="refCount" class="muted">0 字</span></label>
+      <textarea id="refText" rows="5" placeholder="粘贴课文、诗文或任意需要朗读的文本…"></textarea>
+    </div>
+
+    <div id="topicWrap" class="field hidden">
+      <label>演讲主题 / 提纲（可选）</label>
+      <input id="topicInput" type="text" placeholder="例如：产品季度汇报的开场部分">
+    </div>
+
+    <div class="recorder">
+      <canvas id="wave" width="600" height="80"></canvas>
+      <div class="recorder-bar">
+        <button id="recordBtn" class="btn primary">🎙️ 开始录音</button>
+        <span id="recTimer" class="muted mono">00:00</span>
+        <label class="btn ghost file-btn">📁 上传音频<input id="fileInput" type="file" accept="audio/*,.mp3,.wav,.m4a,.webm,.ogg" hidden></label>
+      </div>
+      <p class="muted small">录音上限 10 分钟；或上传 mp3 / wav / m4a / webm（≤25MB）</p>
+    </div>
+
+    <div id="readyPanel" class="hidden">
+      <div class="ready-label">已就绪，可先回放试听：</div>
+      <audio id="previewAudio" controls></audio>
+      <div class="ready-actions">
+        <button id="reRecordBtn" class="btn ghost">↺ 重录 / 换文件</button>
+        <button id="analyzeBtn" class="btn primary">✨ 开始分析</button>
+      </div>
+    </div>
+
+    <div id="statusLine" class="hidden"><span class="spinner"></span><span id="statusText"></span></div>
+    <div id="errorBox" class="hidden"></div>
+  </section>
+
+  <!-- 报告面板 -->
+  <section class="card hidden" id="reportCard">
+    <div class="report-header">
+      <h2 id="reportTitle">点评报告</h2>
+      <button id="closeReportBtn" class="btn ghost small-btn">收起</button>
+    </div>
+    <div id="reportBody"></div>
+    <div id="reportAudioWrap" class="hidden">
+      <div class="ready-label">点击报告中的时间点可跳转播放：</div>
+      <audio id="reportAudio" controls></audio>
+    </div>
+  </section>
+</main>
+
+<aside>
+  <section class="card">
+    <h2>🕘 历史记录</h2>
+    <p class="muted small" id="historyHint">本地保存最近 50 条</p>
+    <div id="historyList"></div>
+  </section>
+</aside>
+</div>
+
+<footer class="muted small">ListenToMe · 录音仅用于本次分析，历史保存在本机浏览器中</footer>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>
