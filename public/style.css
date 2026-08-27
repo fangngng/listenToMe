@@ -36,7 +36,7 @@ header p { margin: 4px 0 0; color: var(--muted); }
   margin: 16px auto 40px;
   padding: 0 16px;
   display: grid;
-  grid-template-columns: 1fr 300px;
+  grid-template-columns: 280px 1fr;
   gap: 16px;
   align-items: start;
 }
@@ -325,6 +325,56 @@ audio { width: 100%; margin-bottom: 12px; }
 .st.missed { color: var(--amber); }
 .st.extra { color: #7c3aed; }
 .missed-cell { color: var(--muted); font-style: italic; }
+
+/* ---------- 账号 ---------- */
+.account-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.account-item:hover { border-color: var(--primary); }
+.account-item.active {
+  border-color: var(--primary);
+  background: #eef0ff;
+}
+.acc-main { flex: 1; min-width: 0; }
+.acc-name {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-item.active .acc-name { color: var(--primary-dark); }
+.acc-meta { font-size: 11px; color: var(--muted); }
+.icon-btn {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 3px 5px;
+  font-size: 13px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.icon-btn:hover { color: var(--primary); background: #f0f0fa; }
+.icon-btn.danger:hover { color: var(--red); background: #fef2f2; }
+.rename-input {
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 13px;
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+}
+#newAccountForm { margin: 8px 0; }
+#newAccountForm input { font-size: 13px; padding: 8px 10px; }
+.wide-btn { width: 100%; }
 
 /* ---------- 历史 ---------- */
 .history-item {

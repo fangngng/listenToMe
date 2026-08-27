@@ -13,6 +13,23 @@
 </header>
 
 <div class="layout">
+<aside>
+  <section class="card">
+    <h2>👤 账号</h2>
+    <div id="accountList"></div>
+    <div id="newAccountForm" class="hidden">
+      <input id="newAccountName" type="text" placeholder="输入名称，回车创建" maxlength="20">
+    </div>
+    <button id="newAccountBtn" class="btn ghost small-btn wide-btn">＋ 新建账号</button>
+  </section>
+
+  <section class="card">
+    <h2>🕘 历史记录</h2>
+    <p class="muted small" id="historyHint">每个账号本地保存最近 50 条</p>
+    <div id="historyList"></div>
+  </section>
+</aside>
+
 <main>
   <!-- 练习面板 -->
   <section class="card" id="practiceCard">
@@ -69,14 +86,6 @@
     </div>
   </section>
 </main>
-
-<aside>
-  <section class="card">
-    <h2>🕘 历史记录</h2>
-    <p class="muted small" id="historyHint">本地保存最近 50 条</p>
-    <div id="historyList"></div>
-  </section>
-</aside>
 </div>
 
 <footer class="muted small">ListenToMe · 录音仅用于本次分析，历史保存在本机浏览器中</footer>

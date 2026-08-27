@@ -267,6 +267,10 @@ $('analyzeBtn').addEventListener('click', analyze)
 
 async function analyze() {
   if (!audioBlob) return
+  if (!activeAccountId) {
+    showError('请先在左侧创建账号，评测会保存到当前账号下')
+    return
+  }
   if (mode === 'read' && !$('refText').value.trim()) {
     showError('朗读模式需要先粘贴参考文本，或切换到演讲/泛用模式')
     return
@@ -537,32 +541,201 @@ function drawRadar(canvas, dims) {
 $('closeReportBtn').addEventListener('click', () => $('reportCard').classList.add('hidden'))
 
 // =========================================================
-// 历史（IndexedDB）
+// 账号（本地多账号，评测按账号隔离）
 // =========================================================
-const DB_NAME = 'listenToMe', STORE = 'records'
+let accounts = []
+let activeAccountId = (() => {
+  const v = localStorage.getItem(ACTIVE_KEY)
+  return v == null ? null : v === 'default' ? 'default' : Number(v) || null
+})()
+
+async function loadAccounts() {
+  accounts = (await idbOp(ACCOUNTS, s => s.getAll())).sort((a, b) => String(a.id).localeCompare(String(b.id)))
+}
+
+/** 旧版本记录（无 accountId）迁移到「默认账号」 */
+async function migrateRecords() {
+  const all = await idbOp(STORE, s => s.getAll())
+  const orphans = all.filter(r => !r.accountId)
+  if (!orphans.length) return
+  if (!accounts.some(a => a.id === 'default')) {
+    await idbOp(ACCOUNTS, s => s.add({ id: 'default', name: '默认账号', createdAt: new Date().toISOString() }))
+  }
+  for (const r of orphans) {
+    await idbOp(STORE, s => s.put({ ...r, accountId: 'default' }))
+  }
+  await loadAccounts()
+}
+
+async function createAccount(name) {
+  const acc = { id: Date.now(), name, createdAt: new Date().toISOString() }
+  await idbOp(ACCOUNTS, s => s.add(acc))
+  await loadAccounts()
+  await setActiveAccount(acc.id)
+}
+
+async function setActiveAccount(id) {
+  activeAccountId = id
+  localStorage.setItem(ACTIVE_KEY, String(id))
+  currentReport = null
+  $('reportCard').classList.add('hidden')
+  await renderAccounts()
+  await renderHistory()
+}
+
+async function renameAccount(id, name) {
+  const acc = accounts.find(a => a.id === id)
+  if (!acc || !name || name === acc.name) return
+  await idbOp(ACCOUNTS, s => s.put({ ...acc, name }))
+  await loadAccounts()
+  await renderAccounts()
+}
+
+async function deleteAccount(id) {
+  const all = await idbOp(STORE, s => s.getAll())
+  for (const r of all.filter(r => r.accountId === id)) {
+    await idbOp(STORE, s => s.delete(r.id))
+  }
+  await idbOp(ACCOUNTS, s => s.delete(id))
+  await loadAccounts()
+  if (String(activeAccountId) === String(id)) {
+    localStorage.removeItem(ACTIVE_KEY)
+    activeAccountId = null
+    currentReport = null
+    $('reportCard').classList.add('hidden')
+    if (accounts.length) await setActiveAccount(accounts[0].id)
+    else { await renderAccounts(); await renderHistory() }
+  } else {
+    await renderAccounts()
+    await renderHistory()
+  }
+}
+
+async function renderAccounts() {
+  const list = $('accountList')
+  if (!accounts.length) {
+    list.innerHTML = '<p class="muted small">还没有账号，点击下方按钮创建</p>'
+    return
+  }
+  // 每个账号的评测数
+  const counts = new Map()
+  for (const r of await idbOp(STORE, s => s.getAll())) {
+    if (r.accountId) counts.set(String(r.accountId), (counts.get(String(r.accountId)) || 0) + 1)
+  }
+  list.innerHTML = accounts.map(a => `
+    <div class="account-item ${String(a.id) === String(activeAccountId) ? 'active' : ''}" data-id="${a.id}">
+      <div class="acc-main">
+        <div class="acc-name">${esc(a.name)}</div>
+        <div class="acc-meta">${counts.get(String(a.id)) || 0} 次评测</div>
+      </div>
+      <button class="icon-btn" data-rename="${a.id}" title="重命名">✏️</button>
+      <button class="icon-btn danger" data-del-acc="${a.id}" title="删除账号及其全部评测">✕</button>
+    </div>`).join('')
+}
+
+function startRename(id) {
+  const acc = accounts.find(a => String(a.id) === String(id))
+  const item = document.querySelector(`.account-item[data-id="${id}"]`)
+  const nameEl = item?.querySelector('.acc-name')
+  if (!acc || !nameEl) return
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.className = 'rename-input'
+  input.maxLength = 20
+  input.value = acc.name
+  nameEl.replaceWith(input)
+  input.focus()
+  input.select()
+  const done = async () => {
+    const v = input.value.trim()
+    if (v && v !== acc.name) await renameAccount(acc.id, v)
+    else await renderAccounts()
+  }
+  input.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') input.blur()
+    if (ev.key === 'Escape') { input.value = acc.name; input.blur() }
+  })
+  input.addEventListener('blur', done, { once: true })
+}
+
+async function submitNewAccount() {
+  const input = $('newAccountName')
+  const name = input.value.trim()
+  input.value = ''
+  $('newAccountForm').classList.add('hidden')
+  if (name) await createAccount(name)
+}
+
+$('newAccountBtn').addEventListener('click', () => {
+  $('newAccountForm').classList.remove('hidden')
+  $('newAccountName').value = ''
+  $('newAccountName').focus()
+})
+$('newAccountName').addEventListener('keydown', e => {
+  if (e.key === 'Enter') submitNewAccount()
+  if (e.key === 'Escape') { $('newAccountName').value = ''; $('newAccountForm').classList.add('hidden') }
+})
+$('newAccountName').addEventListener('blur', () => {
+  if ($('newAccountName').value.trim()) submitNewAccount()
+  else $('newAccountForm').classList.add('hidden')
+})
+
+$('accountList').addEventListener('click', async e => {
+  const del = e.target.closest('[data-del-acc]')
+  if (del) {
+    e.stopPropagation()
+    const id = del.dataset.delAcc
+    const acc = accounts.find(a => String(a.id) === String(id))
+    if (confirm(`删除账号「${acc?.name || ''}」及其全部评测记录？\n此操作不可恢复。`)) {
+      await deleteAccount(id)
+    }
+    return
+  }
+  const ren = e.target.closest('[data-rename]')
+  if (ren) {
+    e.stopPropagation()
+    startRename(ren.dataset.rename)
+    return
+  }
+  const item = e.target.closest('.account-item')
+  if (item && String(item.dataset.id) !== String(activeAccountId)) {
+    await setActiveAccount(item.dataset.id === 'default' ? 'default' : Number(item.dataset.id))
+  }
+})
+
+// =========================================================
+// 历史（IndexedDB，按当前账号过滤）
+// =========================================================
+const DB_NAME = 'listenToMe', STORE = 'records', ACCOUNTS = 'accounts'
+const ACTIVE_KEY = 'listentome:activeAccount'
 
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1)
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: 'id' })
+    const req = indexedDB.open(DB_NAME, 2)
+    req.onupgradeneeded = () => {
+      const db = req.result
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
+      if (!db.objectStoreNames.contains(ACCOUNTS)) db.createObjectStore(ACCOUNTS, { keyPath: 'id' })
+    }
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error)
   })
 }
-function idbOp(fn) {
+function idbOp(storeName, fn) {
   return openDB().then(db => new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite')
-    const store = tx.objectStore(STORE)
-    const out = fn(store)
-    tx.oncomplete = () => resolve(out.result ?? out)
+    const tx = db.transaction(storeName, 'readwrite')
+    const out = fn(tx.objectStore(storeName))
+    tx.oncomplete = () => resolve(out?.result ?? out)
     tx.onerror = () => reject(tx.error)
   }))
 }
 
 async function saveHistory(report) {
+  if (!activeAccountId) return
   try {
-    await idbOp(store => store.add({
+    await idbOp(STORE, store => store.add({
       id: Date.now(),
+      accountId: activeAccountId,
       date: new Date().toISOString(),
       mode: report.mode,
       modeLabel: report.modeLabel,
@@ -573,6 +746,7 @@ async function saveHistory(report) {
       audio: audioBlob,
     }))
     await trimHistory()
+    await renderAccounts()
     await renderHistory()
   } catch (e) {
     console.warn('保存历史失败', e)
@@ -580,11 +754,19 @@ async function saveHistory(report) {
 }
 
 async function trimHistory() {
-  const all = await idbOp(store => store.getAll())
-  if (all.length > 50) {
-    all.sort((a, b) => a.id - b.id)
-    for (const r of all.slice(0, all.length - 50)) {
-      await idbOp(store => store.delete(r.id))
+  const all = await idbOp(STORE, store => store.getAll())
+  const byAcc = new Map()
+  for (const r of all) {
+    if (!r.accountId) continue
+    if (!byAcc.has(r.accountId)) byAcc.set(r.accountId, [])
+    byAcc.get(r.accountId).push(r)
+  }
+  for (const recs of byAcc.values()) {
+    if (recs.length > 50) {
+      recs.sort((a, b) => a.id - b.id)
+      for (const r of recs.slice(0, recs.length - 50)) {
+        await idbOp(STORE, store => store.delete(r.id))
+      }
     }
   }
 }
@@ -592,7 +774,13 @@ async function trimHistory() {
 async function renderHistory() {
   const list = $('historyList')
   try {
-    const all = (await idbOp(store => store.getAll())).sort((a, b) => b.id - a.id)
+    if (!activeAccountId) {
+      list.innerHTML = '<p class="muted small">请先选择或创建账号</p>'
+      return
+    }
+    const all = (await idbOp(STORE, store => store.getAll()))
+      .filter(r => String(r.accountId) === String(activeAccountId))
+      .sort((a, b) => b.id - a.id)
     if (!all.length) {
       list.innerHTML = '<p class="muted small">还没有记录，完成第一次分析后出现在这里</p>'
       return
@@ -615,13 +803,14 @@ $('historyList').addEventListener('click', async e => {
   const del = e.target.closest('[data-del]')
   if (del) {
     e.stopPropagation()
-    await idbOp(store => store.delete(Number(del.dataset.del)))
+    await idbOp(STORE, store => store.delete(Number(del.dataset.del)))
     await renderHistory()
+    await renderAccounts()
     return
   }
   const item = e.target.closest('.history-item')
   if (!item) return
-  const rec = (await idbOp(store => store.get(Number(item.dataset.id))))
+  const rec = (await idbOp(STORE, store => store.get(Number(item.dataset.id))))
   if (!rec) return
   resetAudioURL()
   audioBlob = rec.audio || null
@@ -629,7 +818,25 @@ $('historyList').addEventListener('click', async e => {
   renderReport(rec.report)
 })
 
-renderHistory()
+// =========================================================
+// 启动：迁移旧数据 -> 校验当前账号 -> 渲染
+// =========================================================
+;(async () => {
+  try {
+    await loadAccounts()
+    await migrateRecords()
+    // 当前账号不存在（首次使用/被清除）时默认选第一个
+    if (accounts.length && !accounts.some(a => String(a.id) === String(activeAccountId))) {
+      await setActiveAccount(accounts[0].id)
+    } else {
+      await renderAccounts()
+      await renderHistory()
+    }
+  } catch (e) {
+    console.warn('初始化账号失败', e)
+    $('accountList').innerHTML = '<p class="muted small">账号数据不可用</p>'
+  }
+})()
 
 // =========================================================
 // 工具
