@@ -14,7 +14,7 @@
 
 ## 快速开始
 
-要求 Node.js >= 18。
+要求 Node.js >= 18。部署到服务器的完整步骤见 [docs/DEPLOY_UBUNTU.md](docs/DEPLOY_UBUNTU.md)（systemd + Nginx + HTTPS）。
 
 1. 安装依赖：
 
