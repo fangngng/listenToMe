@@ -17,6 +17,9 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 const SAMPLE_RATE = 16000
 
 // ---------- 状态 ----------
+const DB_NAME = 'listenToMe', STORE = 'records', ACCOUNTS = 'accounts'
+const ACTIVE_KEY = 'listentome:activeAccount'
+
 let mode = 'read'
 let audioBlob = null
 let audioURL = null
@@ -615,6 +618,7 @@ async function renderAccounts() {
   const list = $('accountList')
   if (!accounts.length) {
     list.innerHTML = '<p class="muted small">还没有账号，点击下方按钮创建</p>'
+    await renderLeaderboard()
     return
   }
   // 每个账号的评测数
@@ -631,6 +635,7 @@ async function renderAccounts() {
       <button class="icon-btn" data-rename="${a.id}" title="重命名">✏️</button>
       <button class="icon-btn danger" data-del-acc="${a.id}" title="删除账号及其全部评测">✕</button>
     </div>`).join('')
+  await renderLeaderboard()
 }
 
 function startRename(id) {
@@ -704,11 +709,222 @@ $('accountList').addEventListener('click', async e => {
 })
 
 // =========================================================
+// 趣味排行榜（账号平均分 + 最近趋势动作）
+// =========================================================
+
+// 自绘动画 SVG：领跑兔（跳+耳朵摇+眨眼）、垫底龟（爬+划腿+探头）
+const ANIMAL_SVGS = {
+  rabbit: `
+<svg class="lb-svg lb-svg-rabbit" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="兔子">
+  <g class="rb-body">
+    <g class="rb-ear rb-ear-l">
+      <ellipse cx="24" cy="15" rx="5" ry="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+      <ellipse cx="24" cy="17" rx="2.2" ry="8" fill="#fbcfe8"/>
+    </g>
+    <g class="rb-ear rb-ear-r">
+      <ellipse cx="40" cy="15" rx="5" ry="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+      <ellipse cx="40" cy="17" rx="2.2" ry="8" fill="#fbcfe8"/>
+    </g>
+    <circle cx="32" cy="40" r="16" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+    <ellipse class="rb-eye" cx="26" cy="37.5" rx="2.2" ry="2.8" fill="#374151"/>
+    <ellipse class="rb-eye" cx="38" cy="37.5" rx="2.2" ry="2.8" fill="#374151"/>
+    <circle cx="26.9" cy="36.5" r="0.7" fill="#fff"/>
+    <circle cx="38.9" cy="36.5" r="0.7" fill="#fff"/>
+    <ellipse cx="32" cy="43" rx="1.9" ry="1.4" fill="#f9a8d4"/>
+    <path d="M32 44.3 q-2.5 2.5 -4 0.5 M32 44.3 q2.5 2.5 4 0.5" stroke="#9ca3af" fill="none" stroke-width="1.4" stroke-linecap="round"/>
+    <circle cx="20" cy="43" r="2.6" fill="#fbcfe8" opacity="0.75"/>
+    <circle cx="44" cy="43" r="2.6" fill="#fbcfe8" opacity="0.75"/>
+  </g>
+</svg>`,
+  turtle: `
+<svg class="lb-svg lb-svg-turtle" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="乌龟">
+  <g class="tt-body">
+    <path d="M46 46 l6 2 l-6 3 z" fill="#6ee7b7" stroke="#34d399" stroke-width="1"/>
+    <g class="tt-leg tt-leg-l"><ellipse cx="21" cy="51" rx="4" ry="3.2" fill="#a7f3d0" stroke="#34d399" stroke-width="1.2"/></g>
+    <g class="tt-leg tt-leg-r"><ellipse cx="41" cy="51" rx="4" ry="3.2" fill="#a7f3d0" stroke="#34d399" stroke-width="1.2"/></g>
+    <path d="M17 47 Q31 20 45 47 Z" fill="#34d399" stroke="#059669" stroke-width="1.5"/>
+    <path d="M31 27 L24 44 M31 27 L38 44 M25 34 L37 34" stroke="#059669" stroke-width="1" opacity="0.5" fill="none"/>
+    <rect x="15" y="45.5" width="32" height="4.5" rx="2.2" fill="#10b981" stroke="#059669" stroke-width="1.2"/>
+    <g class="tt-head">
+      <circle cx="13" cy="40" r="5.5" fill="#a7f3d0" stroke="#34d399" stroke-width="1.2"/>
+      <circle cx="11" cy="38.5" r="1.1" fill="#065f46"/>
+      <path d="M9.5 42.5 q1.5 1.6 3.2 0.6" stroke="#059669" stroke-width="1" fill="none" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>`,
+}
+// ---------- 趋势场景：角色（兔/龟/小人）开车、骑车、站立、倒退、幼苗 ----------
+const BODY_COLORS = { rabbit: '#cbd5e1', turtle: '#34d399', person: '#f59e0b' }
+
+/** 角色头部（以 (x,y) 为中心的组） */
+function charHead(char, x, y, s = 1) {
+  const heads = {
+    rabbit: `<ellipse cx="-4" cy="-8.5" rx="2.3" ry="5" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.1"/><ellipse cx="4" cy="-8.5" rx="2.3" ry="5" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.1"/><circle r="7" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.4"/><circle cx="-2.6" cy="-1" r="1" fill="#374151"/><circle cx="2.6" cy="-1" r="1" fill="#374151"/><ellipse cy="2.2" rx="1.2" ry="0.9" fill="#f9a8d4"/>`,
+    turtle: `<circle r="7" fill="#a7f3d0" stroke="#34d399" stroke-width="1.4"/><circle cx="-2.6" cy="-1.2" r="1" fill="#065f46"/><circle cx="2.6" cy="-1.2" r="1" fill="#065f46"/><path d="M-2 2.3 q2 1.6 4 0" stroke="#059669" stroke-width="1.1" fill="none" stroke-linecap="round"/>`,
+    person: `<circle r="7" fill="#fde68a" stroke="#f59e0b" stroke-width="1.4"/><circle cx="-2.6" cy="-1.2" r="1" fill="#374151"/><circle cx="2.6" cy="-1.2" r="1" fill="#374151"/><path d="M-2 2.3 q2 1.6 4 0" stroke="#b45309" stroke-width="1.1" fill="none" stroke-linecap="round"/>`,
+  }
+  return `<g transform="translate(${x} ${y}) scale(${s})">${heads[char] || heads.person}</g>`
+}
+
+/** 角色躯干/四肢（胶囊形线段） */
+const limb = (x1, y1, x2, y2, char, w = 4.5) =>
+  `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${BODY_COLORS[char]}" stroke-width="${w}" stroke-linecap="round"/>`
+
+/** 速度线（车尾气流感） */
+const speedLines = () => `<g class="sc-lines" stroke="#a5b4fc" stroke-width="2" stroke-linecap="round" fill="none"><line x1="3" y1="28" x2="12" y2="28"/><line x1="1" y1="36" x2="10" y2="36"/><line x1="4" y1="44" x2="11" y2="44"/></g>`
+
+/** 车轮（带辐条，旋转动画用） */
+const wheel = (x, y, r = 6.5) => `<g class="wheel"><circle cx="${x}" cy="${y}" r="${r}" fill="#334155"/><circle cx="${x}" cy="${y}" r="${Math.max(2, r - 4)}" fill="#94a3b8"/><path d="M${x - r + 1} ${y} H${x + r - 1} M${x} ${y - r + 1} V${y + r - 1}" stroke="#64748b" stroke-width="1.4"/></g>`
+
+function carScene(char) {
+  return `<svg class="lb-svg lb-svg-car" viewBox="0 0 64 64" role="img" aria-label="开车上升">
+  ${speedLines()}
+  <g class="sc-body">
+    <rect x="12" y="35" width="44" height="12" rx="5" fill="#6366f1"/>
+    <path d="M23 35 L27 23 H43 L47 35 Z" fill="#6366f1"/>
+    <path d="M26 33 L29 25 H41 L44 33 Z" fill="#dbeafe"/>
+    ${charHead(char, 35, 16, 0.95)}
+    ${wheel(22, 48)}${wheel(46, 48)}
+  </g>
+</svg>`
+}
+
+function bikeScene(char) {
+  return `<svg class="lb-svg lb-svg-bike" viewBox="0 0 64 64" role="img" aria-label="骑车上升">
+  <g class="sc-body">
+    <path d="M14 44 L26 27 M26 27 L45 26 M32 43 L26 27 M32 43 L45 26 M45 26 L50 44" stroke="#475569" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+    <path d="M22.5 27 H29.5" stroke="#334155" stroke-width="4" stroke-linecap="round"/>
+    <path d="M41 24 H48" stroke="#334155" stroke-width="4" stroke-linecap="round"/>
+    ${limb(26, 23, 33, 33, char)}
+    ${limb(27, 25, 44, 25, char, 3.5)}
+    ${limb(33, 33, 32, 43, char, 4)}
+    ${charHead(char, 26, 17, 0.95)}
+    ${wheel(14, 44, 8)}${wheel(50, 44, 8)}
+  </g>
+</svg>`
+}
+
+function standScene(char) {
+  return `<svg class="lb-svg lb-svg-stand" viewBox="0 0 64 64" role="img" aria-label="原地站立">
+  <ellipse cx="32" cy="58" rx="13" ry="2.5" fill="#e5e7f0"/>
+  <g class="sc-body">
+    ${limb(32, 25, 32, 44, char, 5)}
+    ${limb(32, 30, 25, 38, char, 3.5)}
+    ${limb(32, 30, 39, 38, char, 3.5)}
+    ${limb(32, 44, 27, 57, char, 4.5)}
+    ${limb(32, 44, 37, 57, char, 4.5)}
+    ${charHead(char, 32, 17, 1)}
+  </g>
+</svg>`
+}
+
+/** 倒退：面朝右但向左挪，双腿交替摆（快速倒退时显示速度线） */
+function walkScene(char) {
+  return `<svg class="lb-svg lb-svg-back" viewBox="0 0 64 64" role="img" aria-label="倒退">
+  ${speedLines()}
+  <ellipse cx="32" cy="58" rx="13" ry="2.5" fill="#e5e7f0"/>
+  <g class="sc-move">
+    ${limb(32, 25, 32, 44, char, 5)}
+    ${limb(32, 30, 25, 37, char, 3.5)}
+    ${limb(32, 30, 39, 37, char, 3.5)}
+    <g class="leg leg-a">${limb(32, 44, 27, 57, char, 4.5)}</g>
+    <g class="leg leg-b">${limb(32, 44, 37, 57, char, 4.5)}</g>
+    ${charHead(char, 32, 17, 1)}
+  </g>
+</svg>`
+}
+
+function seedScene() {
+  return `<svg class="lb-svg lb-svg-seed" viewBox="0 0 64 64" role="img" aria-label="待观察">
+  <ellipse cx="32" cy="56" rx="14" ry="3" fill="#e5e7f0"/>
+  <g class="sprout">
+    <path d="M32 56 V40" stroke="#16a34a" stroke-width="3" stroke-linecap="round" fill="none"/>
+    <path d="M32 44 Q21 42 19 33 Q30 33 32 44 Z" fill="#4ade80" stroke="#16a34a" stroke-width="1.2"/>
+    <path d="M32 40 Q43 38 45 29 Q34 29 32 40 Z" fill="#4ade80" stroke="#16a34a" stroke-width="1.2"/>
+  </g>
+</svg>`
+}
+
+const TREND_SCENES = { car: carScene, bike: bikeScene, stand: standScene, back: walkScene, seed: seedScene }
+
+const TRENDS = [
+  { min: 8, key: 'car', label: '全速上升', cls: 'lb-car' },
+  { min: 3, key: 'bike', label: '稳步上升', cls: 'lb-bike' },
+  { min: -3, key: 'stand', label: '原地站立', cls: 'lb-stand' },
+  { min: -8, key: 'back', label: '缓慢倒退', cls: 'lb-back' },
+  { min: -Infinity, key: 'back', label: '快速倒退', cls: 'lb-back-fast' },
+]
+
+function trendOf(delta) {
+  if (delta == null) return { key: 'seed', label: '待观察', cls: 'lb-seed' }
+  return TRENDS.find(t => delta >= t.min)
+}
+
+/** 趋势 = 最近 k 次均分 - 之前 k 次均分（k 最多 3） */
+function calcTrendDelta(scores) {
+  if (scores.length < 2) return null
+  const k = Math.min(3, Math.floor(scores.length / 2))
+  const avg = a => a.reduce((x, y) => x + y, 0) / a.length
+  return avg(scores.slice(-k)) - avg(scores.slice(-2 * k, -k))
+}
+
+async function renderLeaderboard() {
+  const wrap = $('leaderboard')
+  if (!wrap) return
+  if (!accounts.length) {
+    wrap.innerHTML = '<p class="muted small">创建账号、完成评测后，这里会出现排行榜 🐰🐢</p>'
+    return
+  }
+
+  const all = await idbOp(STORE, s => s.getAll())
+  const byAcc = new Map()
+  for (const r of all) {
+    const key = String(r.accountId)
+    if (!byAcc.has(key)) byAcc.set(key, [])
+    byAcc.get(key).push(r)
+  }
+
+  const rows = accounts.map(a => {
+    const recs = (byAcc.get(String(a.id)) || []).sort((x, y) => x.id - y.id)
+    const scores = recs.map(r => r.totalScore || 0)
+    const avg = scores.length ? scores.reduce((x, y) => x + y, 0) / scores.length : null
+    return { acc: a, count: scores.length, avg, delta: calcTrendDelta(scores) }
+  })
+  rows.sort((x, y) => (y.avg ?? -1) - (x.avg ?? -1))
+
+  const withScores = rows.filter(r => r.avg != null)
+  const topId = withScores.length ? String(withScores[0].acc.id) : null
+  const bottomId = withScores.length >= 2 ? String(withScores[withScores.length - 1].acc.id) : null
+
+  wrap.innerHTML = rows.map((r, i) => {
+    const idStr = String(r.acc.id)
+    const animal = idStr === topId ? ANIMAL_SVGS.rabbit : idStr === bottomId ? ANIMAL_SVGS.turtle : ''
+    // 趋势动画角色跟账号走：榜首兔子、垫底乌龟、其他小人
+    const char = idStr === topId ? 'rabbit' : idStr === bottomId ? 'turtle' : 'person'
+    const tr = trendOf(r.delta)
+    const deltaTxt = r.delta == null ? '' : `${r.delta > 0 ? '+' : ''}${r.delta.toFixed(0)}`
+    const meta = r.avg == null
+      ? '还没有评测'
+      : `均分 ${Math.round(r.avg)} · ${r.count} 次${deltaTxt ? ` · Δ ${deltaTxt}` : ''}`
+    return `
+    <div class="lb-row ${idStr === topId ? 'lb-top' : ''} ${idStr === bottomId ? 'lb-bottom' : ''}">
+      <div class="lb-avatar">${animal || i + 1}</div>
+      <div class="lb-main">
+        <div class="lb-name">${esc(r.acc.name)}</div>
+        <div class="lb-meta">${meta}</div>
+        <div class="lb-bar"><div class="lb-bar-fill" style="width:${r.avg ?? 0}%"></div></div>
+      </div>
+      <div class="lb-trend ${tr.cls}" title="最近趋势：${tr.label}${deltaTxt ? '（Δ ' + deltaTxt + '）' : ''}">
+        <div class="lb-anim">${TREND_SCENES[tr.key](char)}</div>
+        <span class="lb-trend-label">${tr.label}</span>
+      </div>
+    </div>`
+  }).join('')
+}
+
+// =========================================================
 // 历史（IndexedDB，按当前账号过滤）
 // =========================================================
-const DB_NAME = 'listenToMe', STORE = 'records', ACCOUNTS = 'accounts'
-const ACTIVE_KEY = 'listentome:activeAccount'
-
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 2)

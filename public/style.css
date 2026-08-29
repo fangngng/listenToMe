@@ -326,6 +326,183 @@ audio { width: 100%; margin-bottom: 12px; }
 .st.extra { color: #7c3aed; }
 .missed-cell { color: var(--muted); font-style: italic; }
 
+/* ---------- 排行榜 ---------- */
+.banner {
+  max-width: 1080px;
+  margin: 12px auto 0;
+  padding: 0 16px;
+}
+#leaderboard {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.lb-row {
+  flex: 1 1 250px;
+  max-width: 340px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fafaff;
+}
+.lb-row.lb-top {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+.lb-row.lb-bottom {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+.lb-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--muted);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+/* ---------- 自绘动物 SVG 动画 ---------- */
+.lb-svg { width: 100%; height: 100%; display: block; }
+
+/* 兔子：跳跃 + 耳朵摇 + 眨眼 */
+.lb-svg-rabbit { animation: rbHop 1.6s ease-in-out infinite; }
+@keyframes rbHop {
+  0%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-4px); }
+  45% { transform: translateY(0); }
+  60% { transform: translateY(-2px); }
+  72% { transform: translateY(0); }
+}
+.rb-ear { transform-box: fill-box; transform-origin: center bottom; }
+.rb-ear-l { animation: rbEarL 2.4s ease-in-out infinite; }
+.rb-ear-r { animation: rbEarR 2.4s ease-in-out infinite; }
+@keyframes rbEarL {
+  0%, 100% { transform: rotate(0); }
+  50% { transform: rotate(-8deg); }
+}
+@keyframes rbEarR {
+  0%, 100% { transform: rotate(0); }
+  50% { transform: rotate(8deg); }
+}
+.rb-eye { transform-box: fill-box; transform-origin: center; animation: rbBlink 4.2s infinite; }
+@keyframes rbBlink {
+  0%, 91%, 100% { transform: scaleY(1); }
+  94% { transform: scaleY(0.12); }
+  97% { transform: scaleY(1); }
+}
+
+/* 乌龟：整体爬行摆动 + 探头 + 划腿 */
+.lb-svg-turtle { animation: ttCrawl 3.2s ease-in-out infinite; }
+@keyframes ttCrawl {
+  0%, 100% { transform: translateX(0) rotate(0deg); }
+  50% { transform: translateX(-2px) rotate(-1.5deg); }
+}
+.tt-head { transform-box: fill-box; transform-origin: center right; animation: ttHead 3.2s ease-in-out infinite; }
+@keyframes ttHead {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(2.5px); }
+}
+.tt-leg { transform-box: fill-box; transform-origin: center top; animation: ttPaddle 0.7s ease-in-out infinite alternate; }
+.tt-leg-r { animation-delay: 0.35s; }
+@keyframes ttPaddle {
+  from { transform: rotate(-14deg); }
+  to { transform: rotate(14deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lb-svg-rabbit, .rb-ear-l, .rb-ear-r, .rb-eye,
+  .lb-svg-turtle, .tt-head, .tt-leg,
+  .lb-svg-car .sc-body, .lb-svg-car .wheel, .lb-svg-car .sc-lines,
+  .lb-svg-bike .sc-body, .lb-svg-bike .wheel, .lb-svg-stand .sc-body,
+  .lb-svg-back .sc-move, .lb-svg-back .leg, .lb-svg-seed .sprout { animation: none; }
+}
+.lb-top .lb-avatar { border-color: #f59e0b; }
+.lb-bottom .lb-avatar { border-color: #60a5fa; }
+.lb-main { flex: 1; min-width: 0; }
+.lb-name {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lb-meta { font-size: 11px; color: var(--muted); }
+.lb-bar {
+  height: 6px;
+  background: #ececf5;
+  border-radius: 3px;
+  margin-top: 5px;
+  overflow: hidden;
+}
+.lb-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #a5b4fc, var(--primary));
+  border-radius: 3px;
+}
+.lb-trend {
+  text-align: center;
+  flex-shrink: 0;
+  min-width: 68px;
+}
+.lb-anim { width: 48px; height: 48px; margin: 0 auto; }
+.lb-anim svg { width: 100%; height: 100%; display: block; }
+.lb-trend-label { display: block; font-size: 11px; color: var(--muted); }
+
+/* ---------- 趋势场景动画 ---------- */
+/* 开车：车身颠簸 + 车轮飞转 + 速度线闪动 */
+.lb-svg-car .sc-body { animation: scBob 0.5s ease-in-out infinite alternate; }
+.lb-svg-car .wheel { transform-box: fill-box; transform-origin: center; animation: scSpin 0.5s linear infinite; }
+.lb-svg-car .sc-lines { animation: scFlick 0.5s linear infinite alternate; }
+/* 骑车：骑手轻颠 + 车轮慢转 */
+.lb-svg-bike .sc-body { animation: scBob 0.9s ease-in-out infinite alternate; }
+.lb-svg-bike .wheel { transform-box: fill-box; transform-origin: center; animation: scSpin 1.1s linear infinite; }
+/* 站立：呼吸起伏 */
+.lb-svg-stand .sc-body { animation: scBob 2.2s ease-in-out infinite alternate; }
+/* 倒退：整体左移 + 双腿交替摆；快速档加快并点亮速度线 */
+.lb-svg-back .sc-move { animation: scLeft 2.4s ease-in-out infinite alternate; }
+.lb-svg-back .leg { transform-box: fill-box; transform-origin: center top; animation: scLeg 0.6s ease-in-out infinite alternate; }
+.lb-svg-back .leg-b { animation-delay: 0.3s; }
+.lb-svg-back .sc-lines { opacity: 0; }
+.lb-trend.lb-back-fast .sc-move { animation-duration: 1.1s; }
+.lb-trend.lb-back-fast .leg { animation-duration: 0.32s; }
+.lb-trend.lb-back-fast .sc-lines { opacity: 1; animation: scFlick 0.32s linear infinite alternate; }
+/* 幼苗：风中摇摆 */
+.lb-svg-seed .sprout { transform-box: fill-box; transform-origin: center bottom; animation: scSway 2.4s ease-in-out infinite alternate; }
+
+@keyframes scBob {
+  from { transform: translateY(0); }
+  to { transform: translateY(-1.5px); }
+}
+@keyframes scSpin {
+  to { transform: rotate(360deg); }
+}
+@keyframes scFlick {
+  from { opacity: 0.9; transform: translateX(0); }
+  to { opacity: 0.3; transform: translateX(-3px); }
+}
+@keyframes scLeft {
+  from { transform: translateX(7px); }
+  to { transform: translateX(-7px); }
+}
+@keyframes scLeg {
+  from { transform: rotate(14deg); }
+  to { transform: rotate(-14deg); }
+}
+@keyframes scSway {
+  from { transform: rotate(-5deg); }
+  to { transform: rotate(5deg); }
+}
+
 /* ---------- 账号 ---------- */
 .account-item {
   display: flex;
