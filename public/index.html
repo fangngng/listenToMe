@@ -28,6 +28,7 @@
       <input id="newAccountName" type="text" placeholder="输入名称，回车创建" maxlength="20">
     </div>
     <button id="newAccountBtn" class="btn ghost small-btn wide-btn">＋ 新建账号</button>
+    <button id="syncFromCloudBtn" class="btn ghost small-btn wide-btn" style="margin-top:8px">☁️ 从云端同步</button>
   </section>
 
   <section class="card">
@@ -95,7 +96,19 @@
 </main>
 </div>
 
-<footer class="muted small">ListenToMe · 录音仅用于本次分析，历史保存在本机浏览器中</footer>
+<!-- 云端同步弹层 -->
+<div id="syncDialog" class="modal hidden">
+  <div class="card modal-box">
+    <div class="report-header">
+      <h2>☁️ 云端账号</h2>
+      <button id="syncCloseBtn" class="icon-btn" title="关闭">✕</button>
+    </div>
+    <p class="muted small">「导入/更新」会把云端记录合并进本机（保留本机已有的音频），不会删除本地数据</p>
+    <div id="syncList"></div>
+  </div>
+</div>
+
+<footer class="muted small">ListenToMe · 录音仅用于本次分析，历史保存在本机浏览器中；☁️ 标记的账号已同步到服务端（不含音频）</footer>
 
 <script src="app.js" type="module"></script>
 </body>

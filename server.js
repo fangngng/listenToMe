@@ -1,5 +1,6 @@
 import express from 'express'
 import multer from 'multer'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import 'dotenv/config'
@@ -166,7 +167,14 @@ app.post('/api/analyze', async (req, res) => {
     let report = null
     let lastErr = null
     for (let attempt = 0; attempt < 2; attempt++) {
-      const content = await chatLLM(messages)
+      let content
+      try {
+        content = await chatLLM(messages)
+      } catch (e) {
+        // LLM 调用偶发失败（空响应/网络抖动）重试一次；截断类错误重试无意义
+        if (attempt === 0 && !e.message.includes('max_tokens')) { lastErr = e; continue }
+        throw e
+      }
       try {
         report = JSON.parse(extractJson(content))
         break
@@ -207,15 +215,26 @@ async function chatLLM(messages) {
       model: LLM_MODEL,
       messages,
       temperature: 0.4,
-      max_tokens: 6000,
+      max_tokens: 8192,
       response_format: { type: 'json_object' },
     }),
   })
   const text = await r.text()
   if (!r.ok) throw new Error(`DeepSeek 返回 ${r.status}：${text.slice(0, 300)}`)
   const j = JSON.parse(text)
-  const content = j.choices?.[0]?.message?.content
-  if (!content) throw new Error('模型未返回内容')
+  const choice = j.choices?.[0]
+  const content = choice?.message?.content
+  if (!content || !content.trim()) {
+    console.error('[analyze] 模型空响应：', JSON.stringify({
+      model: j.model,
+      finish_reason: choice?.finish_reason,
+      usage: j.usage,
+    }))
+    if (choice?.finish_reason === 'length') {
+      throw new Error('模型输出超过 max_tokens 被截断；若使用 deepseek-reasoner 请改用 deepseek-chat')
+    }
+    throw new Error(`模型未返回内容（finish_reason=${choice?.finish_reason ?? 'unknown'}），请重试`)
+  }
   return content
 }
 
@@ -317,6 +336,99 @@ function normalizeReport(raw, dims) {
     overallAdvice: str(raw.overallAdvice),
   }
 }
+
+// =========================================================
+// 云端账号（data/accounts/<id>.json，多端同步；只存报告文本，不存音频）
+// =========================================================
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data', 'accounts')
+fs.mkdirSync(DATA_DIR, { recursive: true })
+
+// 防 path traversal
+const validCloudId = id => /^[A-Za-z0-9_-]{1,32}$/.test(String(id))
+const accountFile = id => path.join(DATA_DIR, `${id}.json`)
+
+function readCloudAccount(id) {
+  try {
+    return JSON.parse(fs.readFileSync(accountFile(id), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function writeCloudAccount(data) {
+  // 原子写：先写临时文件再改名，防止写一半损坏
+  const file = accountFile(data.id)
+  fs.writeFileSync(file + '.tmp', JSON.stringify(data, null, 2), 'utf8')
+  fs.renameSync(file + '.tmp', file)
+}
+
+/** 记录白名单字段（隔离 audio 等大字段） */
+function sanitizeRecord(r) {
+  return {
+    id: Number(r.id) || 0,
+    date: String(r.date || ''),
+    mode: String(r.mode || 'general'),
+    modeLabel: String(r.modeLabel || ''),
+    durationSec: Number(r.durationSec) || 0,
+    totalScore: Number(r.totalScore) || 0,
+    summary: String(r.summary || ''),
+    report: r.report && typeof r.report === 'object' ? r.report : null,
+  }
+}
+
+app.get('/api/accounts', (req, res) => {
+  const list = []
+  for (const f of fs.readdirSync(DATA_DIR)) {
+    if (!f.endsWith('.json')) continue
+    const a = readCloudAccount(f.slice(0, -5))
+    if (a) list.push({ id: a.id, name: a.name, count: a.records.length, updatedAt: a.updatedAt })
+  }
+  res.json({ accounts: list })
+})
+
+app.get('/api/accounts/:id', (req, res) => {
+  if (!validCloudId(req.params.id)) return res.status(400).json({ error: '非法账号 id' })
+  const a = readCloudAccount(req.params.id)
+  if (!a) return res.status(404).json({ error: '云端账号不存在' })
+  res.json({ account: { id: a.id, name: a.name, createdAt: a.createdAt }, records: a.records })
+})
+
+app.post('/api/accounts', (req, res) => {
+  try {
+    const account = req.body?.account || {}
+    const id = account.id
+    if (!validCloudId(id)) return res.status(400).json({ error: '非法账号 id' })
+    const incoming = (Array.isArray(req.body?.records) ? req.body.records : [])
+      .map(sanitizeRecord)
+      .filter(r => r.id && r.report)
+    const existing = readCloudAccount(id) || {
+      id,
+      name: account.name || '未命名',
+      createdAt: account.createdAt || new Date().toISOString(),
+      records: [],
+      updatedAt: 0,
+    }
+    // 记录按 id 并集合并，同 id 以传入为准；账号名取 updatedAt 较新的一方
+    const merged = new Map(existing.records.map(r => [r.id, r]))
+    for (const r of incoming) merged.set(r.id, r)
+    const records = [...merged.values()].sort((a, b) => a.id - b.id).slice(-200)
+    const name = account.name && (account.updatedAt ?? 0) >= (existing.updatedAt ?? 0)
+      ? account.name
+      : existing.name
+    writeCloudAccount({ id, name, createdAt: existing.createdAt, updatedAt: Date.now(), records })
+    res.json({ ok: true, count: records.length })
+  } catch (err) {
+    console.error('[accounts:post]', err)
+    res.status(500).json({ error: '保存失败：' + err.message })
+  }
+})
+
+app.delete('/api/accounts/:id', (req, res) => {
+  if (!validCloudId(req.params.id)) return res.status(400).json({ error: '非法账号 id' })
+  const file = accountFile(req.params.id)
+  if (fs.existsSync(file)) fs.unlinkSync(file)
+  res.json({ ok: true })
+})
 
 // =========================================================
 // 文本工具

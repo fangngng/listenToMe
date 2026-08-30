@@ -234,12 +234,24 @@ sudo ufw enable
 
 ```bash
 cd /opt/listentome
-git pull                    # 或重新上传覆盖
+git pull                    # 或重新上传覆盖（不要覆盖 data/ 目录）
 npm install --omit=dev
 sudo systemctl restart listentome
 ```
 
-## 10. 常见问题
+## 10. 云端账号数据（v1.2）
+
+- 上传过服务端的账号保存在 `/opt/listentome/data/accounts/<id>.json`（可用 `.env` 中 `DATA_DIR` 改路径），仅文本与评分，不含音频。
+- **备份**：定期备份该目录即可，例如 `crontab` 一行：
+
+  ```bash
+  # 每天凌晨 3 点备份云端账号数据
+  0 3 * * * tar -czf /opt/backups/ltm-accounts-$(date +\%F).tgz -C /opt/listentome data
+  ```
+
+- 更新版本时 `git pull` / 覆盖上传都**不要删除** `data/` 目录；若以低权限用户 `listentome` 运行，确保该用户对 `data/` 有写权限：`sudo chown -R listentome:listentome /opt/listentome/data`。
+
+## 11. 常见问题
 
 | 现象 | 原因 / 处理 |
 |------|-------------|

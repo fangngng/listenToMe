@@ -549,6 +549,34 @@ audio { width: 100%; margin-bottom: 12px; }
   border: 1px solid var(--primary);
   border-radius: 6px;
 }
+.cloud-badge { font-size: 11px; }
+
+/* ---------- 云端同步弹层 ---------- */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(23, 25, 45, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 16px;
+}
+.modal .modal-box {
+  width: min(480px, 100%);
+  max-height: 82vh;
+  overflow-y: auto;
+  margin: 0;
+}
+.sync-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
 #newAccountForm { margin: 8px 0; }
 #newAccountForm input { font-size: 13px; padding: 8px 10px; }
 .wide-btn { width: 100%; }

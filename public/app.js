@@ -416,8 +416,8 @@ function renderReport(report) {
     drawRadar($('radarCanvas'), report.dimensions)
   }
 
-  // 音频播放器 + 跳播
-  $('reportAudioWrap').classList.remove('hidden')
+  // 音频播放器 + 跳播（云端同步来的记录无音频，隐藏播放器）
+  $('reportAudioWrap').classList.toggle('hidden', !audioURL)
   $('reportAudio').src = audioURL || ''
   document.querySelectorAll('[data-seek]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -547,10 +547,23 @@ $('closeReportBtn').addEventListener('click', () => $('reportCard').classList.ad
 // 账号（本地多账号，评测按账号隔离）
 // =========================================================
 let accounts = []
+let cloudAccounts = []  // 服务端账号列表 [{id, name, count, updatedAt}]
 let activeAccountId = (() => {
   const v = localStorage.getItem(ACTIVE_KEY)
   return v == null ? null : v === 'default' ? 'default' : Number(v) || null
 })()
+
+/** 拉取云端账号列表（失败静默，云端不可用不影响本地使用） */
+async function loadCloudAccounts() {
+  try {
+    const r = await fetch('api/accounts')
+    if (r.ok) cloudAccounts = (await r.json()).accounts || []
+  } catch {
+    cloudAccounts = []
+  }
+}
+
+const isLinked = id => cloudAccounts.some(a => String(a.id) === String(id))
 
 async function loadAccounts() {
   accounts = (await idbOp(ACCOUNTS, s => s.getAll())).sort((a, b) => String(a.id).localeCompare(String(b.id)))
@@ -592,6 +605,8 @@ async function renameAccount(id, name) {
   await idbOp(ACCOUNTS, s => s.put({ ...acc, name }))
   await loadAccounts()
   await renderAccounts()
+  // 已关联云端则同步改名
+  if (isLinked(id)) uploadAccount(id).catch(e => console.warn('云端改名推送失败', e))
 }
 
 async function deleteAccount(id) {
@@ -626,15 +641,19 @@ async function renderAccounts() {
   for (const r of await idbOp(STORE, s => s.getAll())) {
     if (r.accountId) counts.set(String(r.accountId), (counts.get(String(r.accountId)) || 0) + 1)
   }
-  list.innerHTML = accounts.map(a => `
+  list.innerHTML = accounts.map(a => {
+    const linked = isLinked(a.id)
+    return `
     <div class="account-item ${String(a.id) === String(activeAccountId) ? 'active' : ''}" data-id="${a.id}">
       <div class="acc-main">
-        <div class="acc-name">${esc(a.name)}</div>
+        <div class="acc-name">${esc(a.name)}${linked ? ' <span class="cloud-badge" title="已同步云端">☁️</span>' : ''}</div>
         <div class="acc-meta">${counts.get(String(a.id)) || 0} 次评测</div>
       </div>
+      <button class="icon-btn" data-cloud="${a.id}" title="${linked ? '从云端更新本机记录' : '上传到云端'}">${linked ? '⬇️' : '⬆️'}</button>
       <button class="icon-btn" data-rename="${a.id}" title="重命名">✏️</button>
       <button class="icon-btn danger" data-del-acc="${a.id}" title="删除账号及其全部评测">✕</button>
-    </div>`).join('')
+    </div>`
+  }).join('')
   await renderLeaderboard()
 }
 
@@ -686,6 +705,18 @@ $('newAccountName').addEventListener('blur', () => {
 })
 
 $('accountList').addEventListener('click', async e => {
+  const cloudBtn = e.target.closest('[data-cloud]')
+  if (cloudBtn) {
+    e.stopPropagation()
+    const id = cloudBtn.dataset.cloud
+    try {
+      if (isLinked(id)) await pullAccount(id)
+      else await uploadAccount(id)
+    } catch (err) {
+      showError(err.message)
+    }
+    return
+  }
   const del = e.target.closest('[data-del-acc]')
   if (del) {
     e.stopPropagation()
@@ -705,6 +736,109 @@ $('accountList').addEventListener('click', async e => {
   const item = e.target.closest('.account-item')
   if (item && String(item.dataset.id) !== String(activeAccountId)) {
     await setActiveAccount(item.dataset.id === 'default' ? 'default' : Number(item.dataset.id))
+  }
+})
+
+// =========================================================
+// 云端同步（上传/拉取/合并；音频不参与同步）
+// =========================================================
+
+/** 上传本地账号及其全部记录到云端（按记录 id 与云端合并） */
+async function uploadAccount(id) {
+  const acc = accounts.find(a => String(a.id) === String(id))
+  if (!acc) throw new Error('账号不存在')
+  const recs = (await idbOp(STORE, s => s.getAll()))
+    .filter(r => String(r.accountId) === String(id))
+    .sort((a, b) => a.id - b.id)
+  const payload = {
+    account: { id: acc.id, name: acc.name, createdAt: acc.createdAt, updatedAt: Date.now() },
+    records: recs.map(({ audio, ...rest }) => rest),  // 音频不上传
+  }
+  const r = await fetch('api/accounts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!r.ok) throw new Error((await r.json()).error || '上传失败')
+  await loadCloudAccounts()
+  await renderAccounts()
+}
+
+/** 拉取云端账号：本地无则创建（沿用云端 id，完成关联），有则合并记录（保留本机音频） */
+async function pullAccount(id) {
+  const r = await fetch('api/accounts/' + id)
+  if (!r.ok) throw new Error((await r.json()).error || '拉取失败')
+  const { account, records } = await r.json()
+
+  let acc = accounts.find(a => String(a.id) === String(account.id))
+  if (!acc) {
+    acc = { id: account.id, name: account.name, createdAt: account.createdAt }
+    await idbOp(ACCOUNTS, s => s.add(acc))
+    await loadAccounts()
+  }
+
+  const local = (await idbOp(STORE, s => s.getAll()))
+    .filter(r => String(r.accountId) === String(account.id))
+  const byId = new Map(local.map(r => [r.id, r]))
+  for (const cr of records) {
+    // 同 id 保留本机音频，其余以云端为准
+    byId.set(cr.id, { ...cr, accountId: account.id, audio: byId.get(cr.id)?.audio })
+  }
+  for (const rec of byId.values()) {
+    await idbOp(STORE, s => s.put(rec))
+  }
+  await renderAccounts()
+  await renderHistory()
+}
+
+async function renderSyncDialog() {
+  const list = $('syncList')
+  if (!cloudAccounts.length) {
+    list.innerHTML = '<p class="muted small">云端还没有账号。先在本机点账号旁的「⬆️」上传到云端。</p>'
+    return
+  }
+  list.innerHTML = cloudAccounts.map(a => `
+    <div class="sync-item">
+      <div class="acc-main">
+        <div class="acc-name">${esc(a.name)}${isLinked(a.id) ? ' <span class="cloud-badge">☁️</span>' : ''}</div>
+        <div class="acc-meta">${a.count} 次评测 · 更新于 ${new Date(a.updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</div>
+      </div>
+      <button class="btn ghost small-btn" data-import="${a.id}">导入/更新</button>
+      <button class="icon-btn danger" data-del-cloud="${a.id}" title="删除云端账号（不影响本机）">✕</button>
+    </div>`).join('')
+}
+
+$('syncFromCloudBtn').addEventListener('click', async () => {
+  await loadCloudAccounts()
+  await renderSyncDialog()
+  $('syncDialog').classList.remove('hidden')
+})
+$('syncCloseBtn').addEventListener('click', () => $('syncDialog').classList.add('hidden'))
+$('syncDialog').addEventListener('click', e => {
+  if (e.target === $('syncDialog')) $('syncDialog').classList.add('hidden')
+})
+$('syncList').addEventListener('click', async e => {
+  const delC = e.target.closest('[data-del-cloud]')
+  if (delC) {
+    e.stopPropagation()
+    const id = delC.dataset.delCloud
+    const a = cloudAccounts.find(x => String(x.id) === String(id))
+    if (confirm(`删除云端账号「${a?.name || ''}」？\n本机数据不受影响。`)) {
+      await fetch('api/accounts/' + id, { method: 'DELETE' })
+      await loadCloudAccounts()
+      await renderSyncDialog()
+      await renderAccounts()
+    }
+    return
+  }
+  const imp = e.target.closest('[data-import]')
+  if (!imp) return
+  try {
+    await pullAccount(imp.dataset.import)
+    await loadCloudAccounts()
+    await renderSyncDialog()
+  } catch (err) {
+    showError('同步失败：' + err.message)
   }
 })
 
@@ -964,6 +1098,10 @@ async function saveHistory(report) {
     await trimHistory()
     await renderAccounts()
     await renderHistory()
+    // 当前账号已关联云端：静默推送（失败不打断，下次手动同步兜底）
+    if (activeAccountId && isLinked(activeAccountId)) {
+      uploadAccount(activeAccountId).catch(e => console.warn('云端推送失败', e))
+    }
   } catch (e) {
     console.warn('保存历史失败', e)
   }
@@ -1040,6 +1178,7 @@ $('historyList').addEventListener('click', async e => {
 ;(async () => {
   try {
     await loadAccounts()
+    await loadCloudAccounts()
     await migrateRecords()
     // 当前账号不存在（首次使用/被清除）时默认选第一个
     if (accounts.length && !accounts.some(a => String(a.id) === String(activeAccountId))) {
