@@ -666,3 +666,8 @@ footer { text-align: center; padding: 10px; }
   }
   .lb-row { flex-basis: 100%; max-width: none; }
 }
+
+/* ---------- 账号组 ---------- */
+.group-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.group-row input { flex: 1; min-width: 0; }
+#groupLabel.in-group { color: var(--primary); font-weight: 600; }

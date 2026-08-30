@@ -377,11 +377,13 @@ function sanitizeRecord(r) {
 }
 
 app.get('/api/accounts', (req, res) => {
+  const group = String(req.query.group || '')
   const list = []
   for (const f of fs.readdirSync(DATA_DIR)) {
     if (!f.endsWith('.json')) continue
     const a = readCloudAccount(f.slice(0, -5))
-    if (a) list.push({ id: a.id, name: a.name, count: a.records.length, updatedAt: a.updatedAt })
+    // 账号组：只列出与请求同组的账号（组名空串 = 未分组，互相可见）
+    if (a && (a.group || '') === group) list.push({ id: a.id, name: a.name, count: a.records.length, updatedAt: a.updatedAt })
   }
   res.json({ accounts: list })
 })
@@ -419,7 +421,9 @@ app.post('/api/accounts', (req, res) => {
     const name = account.name && (account.updatedAt ?? 0) >= (existing.updatedAt ?? 0)
       ? account.name
       : existing.name
-    writeCloudAccount({ id, name, createdAt: existing.createdAt, updatedAt: Date.now(), records })
+    // 组归属：请求带 group 则更新（上传时归入当前组），否则保留云端原组
+    const group = req.body?.group != null ? String(req.body.group).slice(0, 32) : (existing.group || '')
+    writeCloudAccount({ id, name, group, createdAt: existing.createdAt, updatedAt: Date.now(), records })
     res.json({ ok: true, count: records.length })
   } catch (err) {
     console.error('[accounts:post]', err)

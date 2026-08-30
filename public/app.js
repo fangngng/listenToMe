@@ -19,6 +19,7 @@ const SAMPLE_RATE = 16000
 // ---------- 状态 ----------
 const DB_NAME = 'listenToMe', STORE = 'records', ACCOUNTS = 'accounts'
 const ACTIVE_KEY = 'listentome:activeAccount'
+const GROUP_KEY = 'listentome:group'  // 账号组：设备级，云端只展示同组账号
 
 let mode = 'read'
 let audioBlob = null
@@ -550,16 +551,17 @@ $('closeReportBtn').addEventListener('click', () => $('reportCard').classList.ad
 // 账号（本地多账号，评测按账号隔离）
 // =========================================================
 let accounts = []
-let cloudAccounts = []  // 服务端账号列表 [{id, name, count, updatedAt}]
+let cloudAccounts = []  // 当前组的云端账号列表 [{id, name, count, updatedAt}]
+let myGroup = localStorage.getItem(GROUP_KEY) || ''
 let activeAccountId = (() => {
   const v = localStorage.getItem(ACTIVE_KEY)
   return v == null ? null : v === 'default' ? 'default' : Number(v) || null
 })()
 
-/** 拉取云端账号列表（失败静默，云端不可用不影响本地使用） */
+/** 拉取云端账号列表（只拉当前组；失败静默，云端不可用不影响本地使用） */
 async function loadCloudAccounts() {
   try {
-    const r = await fetch('api/accounts')
+    const r = await fetch('api/accounts?group=' + encodeURIComponent(myGroup))
     if (r.ok) cloudAccounts = (await r.json()).accounts || []
   } catch {
     cloudAccounts = []
@@ -757,6 +759,7 @@ async function uploadAccount(id, replace = false) {
     .sort((a, b) => a.id - b.id)
   const payload = {
     account: { id: acc.id, name: acc.name, createdAt: acc.createdAt, updatedAt: Date.now() },
+    group: myGroup,  // 上传时归入当前组
     records: recs.map(({ audio, ...rest }) => rest),  // 音频不上传
     ...(replace ? { replace: true } : {}),
   }
@@ -797,7 +800,32 @@ async function pullAccount(id) {
   await renderHistory()
 }
 
+/** 账号组状态条：未加入组可输入组名加入，已加入可退出 */
+function renderGroupBar() {
+  const inGroup = !!myGroup
+  $('groupLabel').textContent = inGroup ? `当前组：${myGroup}` : '未加入组（只能看到未分组账号）'
+  $('groupLabel').classList.toggle('in-group', inGroup)
+  $('groupInput').hidden = inGroup
+  $('groupBtn').textContent = inGroup ? '退出组' : '加入'
+}
+
+$('groupBtn').addEventListener('click', async () => {
+  if (myGroup) {
+    myGroup = ''
+  } else {
+    const g = $('groupInput').value.trim()
+    if (!g) { showError('请输入组名'); return }
+    myGroup = g.slice(0, 20)
+  }
+  if (myGroup) localStorage.setItem(GROUP_KEY, myGroup)
+  else localStorage.removeItem(GROUP_KEY)
+  renderGroupBar()
+  await loadCloudAccounts()
+  await renderSyncDialog()
+})
+
 async function renderSyncDialog() {
+  renderGroupBar()
   const list = $('syncList')
   if (!cloudAccounts.length) {
     list.innerHTML = '<p class="muted small">云端还没有账号。先在本机点账号旁的「⬆️」上传到云端。</p>'
