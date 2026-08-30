@@ -289,14 +289,14 @@ async function analyze() {
     fd.append('audio', audioBlob, audioBlob.name || 'audio.wav')
     fd.append('duration', metrics?.durationSec || 0)
 
-    const r1 = await fetch('/api/transcribe', { method: 'POST', body: fd })
+    const r1 = await fetch('api/transcribe', { method: 'POST', body: fd })
     const transcript = await r1.json()
     if (!r1.ok) throw new Error(transcript.error || '转写失败')
 
     setStatus('transcribe')
     await sleep(80) // 让状态文案渲染出来
     setStatus('analyze')
-    const r2 = await fetch('/api/analyze', {
+    const r2 = await fetch('api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

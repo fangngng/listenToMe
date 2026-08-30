@@ -136,6 +136,33 @@ sudo systemctl daemon-reload && sudo systemctl restart listentome
 
 ## 5. Nginx 反向代理
 
+**方式 A：已有自己的 nginx.conf、想挂在子路径 `/ltm` 下**（如 `docs/nginx.conf` 所示）：
+
+在 443 的 `server` 块里加：
+
+```nginx
+location = /ltm {
+    return 301 /ltm/;
+}
+location ^~ /ltm/ {
+    proxy_pass http://127.0.0.1:3000/;   # 末尾 / 剥掉 /ltm 前缀
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    client_max_body_size 30m;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+}
+```
+
+两个关键点：
+- **必须用 `^~`**：普通 `location /ltm/` 会被配置里其他静态文件正则（`\.(js|css)$` 等）抢走匹配导致 404
+- 应用前端已使用相对路径（`api/transcribe`、`style.css`），因此无需改代码即可挂在任意子路径下
+
+然后重载：`sudo nginx -t && sudo systemctl reload nginx`，访问 `https://你的域名/ltm/`。
+
+**方式 B：独立站点文件 + 子域名/根路径**：
+
 ```bash
 sudo apt-get install -y nginx
 sudo nano /etc/nginx/sites-available/listentome
