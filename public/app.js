@@ -258,6 +258,9 @@ function resetReady() {
   audioBlob = null
   metrics = null
   $('readyPanel').classList.add('hidden')
+  $('previewAudio').removeAttribute('src')  // 停掉可能在播的回放
+  levelHistory = []
+  drawWave()
 }
 
 function resetAudioURL() {
@@ -595,6 +598,7 @@ async function setActiveAccount(id) {
   localStorage.setItem(ACTIVE_KEY, String(id))
   currentReport = null
   $('reportCard').classList.add('hidden')
+  resetReady()  // 清掉上个账号留下的录音/回放
   await renderAccounts()
   await renderHistory()
 }
@@ -610,6 +614,10 @@ async function renameAccount(id, name) {
 }
 
 async function deleteAccount(id) {
+  // dataset 传来的是字符串；IDB 键类型敏感，先换回存储时的真实 id
+  const acc = accounts.find(a => String(a.id) === String(id))
+  if (!acc) return
+  id = acc.id
   const all = await idbOp(STORE, s => s.getAll())
   for (const r of all.filter(r => r.accountId === id)) {
     await idbOp(STORE, s => s.delete(r.id))
@@ -637,10 +645,7 @@ async function renderAccounts() {
     return
   }
   // 每个账号的评测数
-  const counts = new Map()
-  for (const r of await idbOp(STORE, s => s.getAll())) {
-    if (r.accountId) counts.set(String(r.accountId), (counts.get(String(r.accountId)) || 0) + 1)
-  }
+  const counts = await recordCounts()
   list.innerHTML = accounts.map(a => {
     const linked = isLinked(a.id)
     return `
@@ -743,8 +748,8 @@ $('accountList').addEventListener('click', async e => {
 // 云端同步（上传/拉取/合并；音频不参与同步）
 // =========================================================
 
-/** 上传本地账号及其全部记录到云端（按记录 id 与云端合并） */
-async function uploadAccount(id) {
+/** 上传本地账号及其全部记录到云端（默认按记录 id 与云端合并；replace=true 时以本地列表整体替换云端记录） */
+async function uploadAccount(id, replace = false) {
   const acc = accounts.find(a => String(a.id) === String(id))
   if (!acc) throw new Error('账号不存在')
   const recs = (await idbOp(STORE, s => s.getAll()))
@@ -753,6 +758,7 @@ async function uploadAccount(id) {
   const payload = {
     account: { id: acc.id, name: acc.name, createdAt: acc.createdAt, updatedAt: Date.now() },
     records: recs.map(({ audio, ...rest }) => rest),  // 音频不上传
+    ...(replace ? { replace: true } : {}),
   }
   const r = await fetch('api/accounts', {
     method: 'POST',
@@ -840,6 +846,113 @@ $('syncList').addEventListener('click', async e => {
   } catch (err) {
     showError('同步失败：' + err.message)
   }
+})
+
+// =========================================================
+// 合并账号 / 转移记录
+// =========================================================
+
+/** 各账号评测数（key 为 String(accountId)） */
+async function recordCounts() {
+  const counts = new Map()
+  for (const r of await idbOp(STORE, s => s.getAll())) {
+    if (r.accountId) counts.set(String(r.accountId), (counts.get(String(r.accountId)) || 0) + 1)
+  }
+  return counts
+}
+
+function openMergeDialog() {
+  if (accounts.length < 2) { showError('至少需要两个账号才能合并'); return }
+  $('mergeTarget').innerHTML = accounts.map(a => `<option value="${esc(String(a.id))}">${esc(a.name)}</option>`).join('')
+  renderMergeList()
+  $('mergeDialog').classList.remove('hidden')
+}
+
+async function renderMergeList() {
+  const target = $('mergeTarget').value
+  const counts = await recordCounts()
+  const rows = accounts.filter(a => String(a.id) !== String(target))
+  $('mergeList').innerHTML = rows.length
+    ? rows.map(a => `
+      <label class="sync-item merge-item">
+        <input type="checkbox" data-merge-src="${esc(String(a.id))}">
+        <div class="acc-main">
+          <div class="acc-name">${esc(a.name)}${isLinked(a.id) ? ' <span class="cloud-badge">☁️</span>' : ''}</div>
+          <div class="acc-meta">${counts.get(String(a.id)) || 0} 次评测</div>
+        </div>
+      </label>`).join('')
+    : '<p class="muted small">没有其他账号可合并</p>'
+}
+
+async function confirmMerge() {
+  const target = accounts.find(a => String(a.id) === String($('mergeTarget').value))
+  const sourceIds = [...document.querySelectorAll('[data-merge-src]:checked')].map(el => el.dataset.mergeSrc)
+  if (!target || !sourceIds.length) { showError('请先勾选要合并的账号'); return }
+  if (!confirm(`把 ${sourceIds.length} 个账号的全部评测记录合并到「${target.name}」，并删除这些源账号？\n此操作不可恢复。`)) return
+  // 记录改归属（记录 id 不变，云端按 id 合并不受影响）
+  for (const r of await idbOp(STORE, s => s.getAll())) {
+    if (sourceIds.some(id => String(r.accountId) === String(id))) {
+      await idbOp(STORE, s => s.put({ ...r, accountId: target.id }))
+    }
+  }
+  // 删除源账号（云端有的话一并删除）；dataset 是字符串，换回真实 id 再删
+  for (const sid of sourceIds) {
+    const src = accounts.find(a => String(a.id) === String(sid))
+    if (!src) continue
+    if (isLinked(src.id)) fetch('api/accounts/' + src.id, { method: 'DELETE' }).catch(e => console.warn('云端删除失败', e))
+    await idbOp(ACCOUNTS, s => s.delete(src.id))
+  }
+  $('mergeDialog').classList.add('hidden')
+  await loadAccounts()
+  if (sourceIds.some(id => String(id) === String(activeAccountId))) await setActiveAccount(target.id)
+  else { await renderAccounts(); await renderHistory() }
+  if (isLinked(target.id)) uploadAccount(target.id).catch(e => console.warn('云端推送失败', e))
+}
+
+let moveRecordId = null
+
+async function openMoveDialog(recordId) {
+  moveRecordId = Number(recordId)
+  const others = accounts.filter(a => String(a.id) !== String(activeAccountId))
+  $('moveList').innerHTML = others.length
+    ? others.map(a => `
+      <div class="sync-item">
+        <div class="acc-main"><div class="acc-name">${esc(a.name)}</div><div class="acc-meta">${isLinked(a.id) ? '☁️ 已同步云端' : '仅本机'}</div></div>
+        <button class="btn ghost small-btn" data-move-to="${esc(String(a.id))}">移入</button>
+      </div>`).join('')
+    : '<p class="muted small">没有其他账号可转移</p>'
+  $('moveDialog').classList.remove('hidden')
+}
+
+async function moveRecordTo(targetId) {
+  const rec = await idbOp(STORE, s => s.get(moveRecordId))
+  const target = accounts.find(a => String(a.id) === String(targetId))
+  if (!rec || !target) return
+  const fromId = rec.accountId
+  await idbOp(STORE, s => s.put({ ...rec, accountId: target.id }))
+  $('moveDialog').classList.add('hidden')
+  moveRecordId = null
+  // 云端：源账号以本地列表整体替换（移除该条），目标账号合并加入
+  if (isLinked(fromId)) uploadAccount(fromId, true).catch(e => console.warn('云端推送失败', e))
+  if (isLinked(target.id)) uploadAccount(target.id).catch(e => console.warn('云端推送失败', e))
+  await renderHistory()
+  await renderAccounts()
+}
+
+$('mergeAccBtn').addEventListener('click', openMergeDialog)
+$('mergeTarget').addEventListener('change', renderMergeList)
+$('mergeConfirmBtn').addEventListener('click', confirmMerge)
+$('mergeCloseBtn').addEventListener('click', () => $('mergeDialog').classList.add('hidden'))
+$('mergeDialog').addEventListener('click', e => {
+  if (e.target === $('mergeDialog')) $('mergeDialog').classList.add('hidden')
+})
+$('moveCloseBtn').addEventListener('click', () => $('moveDialog').classList.add('hidden'))
+$('moveDialog').addEventListener('click', e => {
+  if (e.target === $('moveDialog')) $('moveDialog').classList.add('hidden')
+})
+$('moveList').addEventListener('click', async e => {
+  const btn = e.target.closest('[data-move-to]')
+  if (btn) await moveRecordTo(btn.dataset.moveTo)
 })
 
 // =========================================================
@@ -1146,14 +1259,22 @@ async function renderHistory() {
           <div class="history-summary">${esc(r.summary)}</div>
         </div>
         <span class="history-score">${r.totalScore}</span>
+        <button class="history-del" data-move="${r.id}" title="转移到其他账号">⇨</button>
         <button class="history-del" data-del="${r.id}" title="删除">✕</button>
       </div>`).join('')
+    if (!$('growthWrap').classList.contains('hidden')) await renderGrowth()
   } catch (e) {
     list.innerHTML = '<p class="muted small">历史记录不可用</p>'
   }
 }
 
 $('historyList').addEventListener('click', async e => {
+  const mv = e.target.closest('[data-move]')
+  if (mv) {
+    e.stopPropagation()
+    await openMoveDialog(mv.dataset.move)
+    return
+  }
   const del = e.target.closest('[data-del]')
   if (del) {
     e.stopPropagation()
@@ -1166,11 +1287,166 @@ $('historyList').addEventListener('click', async e => {
   if (!item) return
   const rec = (await idbOp(STORE, store => store.get(Number(item.dataset.id))))
   if (!rec) return
+  if (rec.date) rec.report.date = rec.date  // 分享卡显示记录日期
   resetAudioURL()
   audioBlob = rec.audio || null
   audioURL = audioBlob ? URL.createObjectURL(audioBlob) : null
   renderReport(rec.report)
 })
+
+// =========================================================
+// 成长曲线（当前账号总分走势，自绘 SVG，复用排行榜趋势算法）
+// =========================================================
+$('growthBtn').addEventListener('click', () => {
+  const wrap = $('growthWrap')
+  wrap.classList.toggle('hidden')
+  if (!wrap.classList.contains('hidden')) renderGrowth()
+})
+
+async function renderGrowth() {
+  const wrap = $('growthWrap')
+  const recs = (await idbOp(STORE, s => s.getAll()))
+    .filter(r => String(r.accountId) === String(activeAccountId) && typeof r.totalScore === 'number')
+    .sort((a, b) => a.id - b.id)
+  if (recs.length < 2) {
+    wrap.innerHTML = '<p class="muted small">至少两次评测后出现曲线</p>'
+    return
+  }
+  const pts = recs.map(r => r.totalScore)
+  const avg = Math.round(pts.reduce((a, b) => a + b, 0) / pts.length)
+  const tr = trendOf(calcTrendDelta(pts))
+  const W = 340, H = 150, padL = 26, padR = 10, top = 10, bottom = 128
+  const x = i => padL + (i * (W - padL - padR)) / (pts.length - 1)
+  const y = s => top + ((100 - s) / 100) * (bottom - top)
+  const poly = pts.map((s, i) => `${x(i).toFixed(1)},${y(s).toFixed(1)}`).join(' ')
+  const grid = [0, 50, 100].map(g => `
+    <line x1="${padL}" y1="${y(g)}" x2="${W - padR}" y2="${y(g)}" stroke="#e5e7f0" stroke-width="1"/>
+    <text x="${padL - 4}" y="${y(g) + 3}" font-size="9" fill="#9ca3af" text-anchor="end">${g}</text>`).join('')
+  const dots = recs.map((r, i) => `
+    <circle cx="${x(i).toFixed(1)}" cy="${y(r.totalScore).toFixed(1)}" r="3.2" fill="#4f46e5">
+      <title>${new Date(r.date).toLocaleDateString('zh-CN')} ${esc(r.modeLabel)}：${r.totalScore} 分</title>
+    </circle>`).join('')
+  const df = d => new Date(d).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+  wrap.innerHTML = `
+    <div class="muted small" style="margin-bottom:2px">${recs.length} 次评测 · 平均 ${avg} 分 · 趋势：${tr.label}</div>
+    <svg viewBox="0 0 ${W} ${H}" class="growth-svg">
+      ${grid}
+      <line x1="${padL}" y1="${y(avg)}" x2="${W - padR}" y2="${y(avg)}" stroke="#10b981" stroke-width="1" stroke-dasharray="4 3"/>
+      <polyline points="${poly}" fill="none" stroke="#6366f1" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${dots}
+      <text x="${padL}" y="${H - 3}" font-size="9" fill="#9ca3af">${df(recs[0].date)}</text>
+      <text x="${W - padR}" y="${H - 3}" font-size="9" fill="#9ca3af" text-anchor="end">${df(recs[recs.length - 1].date)}</text>
+    </svg>`
+}
+
+// =========================================================
+// 报告分享（canvas 画分享卡 -> 系统分享 / 下载 PNG）
+// =========================================================
+$('shareReportBtn').addEventListener('click', () => currentReport && shareReport(currentReport))
+
+function wrapLines(ctx, text, maxW, maxLines = 99) {
+  const out = []
+  let line = ''
+  for (const ch of String(text ?? '')) {
+    if (ctx.measureText(line + ch).width > maxW || ch === '\n') {
+      out.push(line)
+      if (out.length >= maxLines) return [...out.slice(0, maxLines - 1), out[maxLines - 1] + '…']
+      line = ch === '\n' ? '' : ch
+    } else line += ch
+  }
+  if (line) out.push(line)
+  return out
+}
+
+function shareReport(report) {
+  const FONT = '"PingFang SC", "Microsoft YaHei", sans-serif'
+  const accName = accounts.find(a => String(a.id) === String(activeAccountId))?.name || ''
+  const W = 750, X = 48, CW = W - 96
+  const dims = report.dimensions || []
+  const lines = [
+    ...(report.strengths || []).slice(0, 3).map(s => '👍 ' + s.title),
+    ...(report.weaknesses || []).slice(0, 3).map(w => '🎯 ' + w.title),
+  ]
+  // 先量出总评行数再定画布高
+  const probe = document.createElement('canvas').getContext('2d')
+  probe.font = '22px ' + FONT
+  const sumLines = wrapLines(probe, report.summary, CW - 180, 5)
+  const H = 350 + dims.length * 52 + lines.length * 36 + 90
+
+  const cv = document.createElement('canvas')
+  cv.width = W; cv.height = H
+  const ctx = cv.getContext('2d')
+  const bg = ctx.createLinearGradient(0, 0, 0, H)
+  bg.addColorStop(0, '#eef2ff'); bg.addColorStop(1, '#ffffff')
+  ctx.fillStyle = bg
+  ctx.fillRect(0, 0, W, H)
+  ctx.textBaseline = 'alphabetic'
+
+  let y = 90
+  ctx.fillStyle = '#4f46e5'
+  ctx.font = 'bold 40px ' + FONT
+  ctx.fillText('🎧 ListenToMe 点评报告', X, y)
+  y = 128
+  ctx.fillStyle = '#6b7280'
+  ctx.font = '22px ' + FONT
+  ctx.fillText(`${accName ? accName + ' · ' : ''}${report.modeLabel} · ${new Date(report.date || Date.now()).toLocaleString('zh-CN')}`, X, y)
+
+  // 总分圆环 + 总评
+  const scx = X + 75, scy = 235
+  const pct = Math.max(0, Math.min(100, report.totalScore || 0))
+  ctx.beginPath(); ctx.arc(scx, scy, 62, 0, Math.PI * 2)
+  ctx.strokeStyle = '#e5e7f0'; ctx.lineWidth = 12; ctx.stroke()
+  ctx.beginPath(); ctx.arc(scx, scy, 62, -Math.PI / 2, -Math.PI / 2 + (pct / 100) * Math.PI * 2)
+  ctx.strokeStyle = '#6366f1'; ctx.lineCap = 'round'; ctx.stroke()
+  ctx.fillStyle = '#1f2333'; ctx.font = 'bold 52px ' + FONT; ctx.textAlign = 'center'
+  ctx.fillText(pct, scx, scy + 12)
+  ctx.fillStyle = '#9ca3af'; ctx.font = '20px ' + FONT
+  ctx.fillText('/ 100', scx, scy + 44)
+  ctx.textAlign = 'left'
+  ctx.fillStyle = '#374151'; ctx.font = '22px ' + FONT
+  sumLines.forEach((l, i) => ctx.fillText(l, X + 180, 200 + i * 32))
+
+  // 维度条
+  y = 352
+  for (const d of dims) {
+    ctx.fillStyle = '#1f2333'; ctx.font = 'bold 24px ' + FONT
+    ctx.fillText(d.name, X, y)
+    ctx.textAlign = 'right'
+    ctx.fillStyle = '#4f46e5'
+    ctx.fillText(d.score, W - X, y)
+    ctx.textAlign = 'left'
+    ctx.fillStyle = '#e5e7f0'
+    ctx.fillRect(X, y + 10, CW, 12)
+    ctx.fillStyle = '#6366f1'
+    ctx.fillRect(X, y + 10, (CW * Math.max(0, Math.min(100, d.score || 0))) / 100, 12)
+    y += 52
+  }
+
+  // 亮点 / 改进
+  ctx.font = '22px ' + FONT
+  for (const l of lines) {
+    ctx.fillStyle = '#374151'
+    ctx.fillText(l, X, y)
+    y += 36
+  }
+
+  ctx.fillStyle = '#9ca3af'; ctx.font = '20px ' + FONT
+  ctx.fillText('🎧 ListenToMe · AI 朗读演讲教练 · fftdsh.com/ltm', X, H - 36)
+
+  cv.toBlob(async blob => {
+    if (!blob) return
+    const file = new File([blob], 'listenToMe-report.png', { type: 'image/png' })
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'ListenToMe 点评报告' }) } catch {} // 用户取消分享不算错误
+    } else {
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = file.name
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+    }
+  }, 'image/png')
+}
 
 // =========================================================
 // 启动：迁移旧数据 -> 校验当前账号 -> 渲染

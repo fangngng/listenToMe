@@ -577,9 +577,33 @@ audio { width: 100%; margin-bottom: 12px; }
   border-radius: 10px;
   margin-bottom: 8px;
 }
+.merge-item {
+  cursor: pointer;
+}
+.merge-item:hover {
+  border-color: #6366f1;
+}
+.merge-item input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.merge-target-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.merge-target-row select {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
 #newAccountForm { margin: 8px 0; }
 #newAccountForm input { font-size: 13px; padding: 8px 10px; }
 .wide-btn { width: 100%; }
+.growth-svg { width: 100%; height: auto; display: block; }
 
 /* ---------- 历史 ---------- */
 .history-item {
@@ -619,3 +643,26 @@ audio { width: 100%; margin-bottom: 12px; }
 .history-del:hover { color: var(--red); }
 
 footer { text-align: center; padding: 10px; }
+
+/* ---------- 手机适配 ---------- */
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  .layout main { order: -1; } /* 练习面板提到最前，账号/历史垫后 */
+}
+@media (max-width: 480px) {
+  header { padding: 20px 12px 4px; }
+  header h1 { font-size: 22px; }
+  .card { padding: 14px; }
+  .report-header { flex-wrap: wrap; gap: 8px; }
+  /* 逐句长表格横向滚动，不撑破页面宽度 */
+  .sent-table { display: block; overflow-x: auto; }
+  /* 账号/历史行：名称与总评换行，不再截断挤爆 */
+  .acc-name { white-space: normal; }
+  .history-summary {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .lb-row { flex-basis: 100%; max-width: none; }
+}

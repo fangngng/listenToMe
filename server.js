@@ -408,10 +408,14 @@ app.post('/api/accounts', (req, res) => {
       records: [],
       updatedAt: 0,
     }
-    // 记录按 id 并集合并，同 id 以传入为准；账号名取 updatedAt 较新的一方
-    const merged = new Map(existing.records.map(r => [r.id, r]))
-    for (const r of incoming) merged.set(r.id, r)
-    const records = [...merged.values()].sort((a, b) => a.id - b.id).slice(-200)
+    // 记录按 id 并集合并，同 id 以传入为准；replace: true 时以传入列表整体替换（转移记录后源账号移除该条）
+    const records = req.body?.replace === true
+      ? incoming.sort((a, b) => a.id - b.id).slice(-200)
+      : (() => {
+          const merged = new Map(existing.records.map(r => [r.id, r]))
+          for (const r of incoming) merged.set(r.id, r)
+          return [...merged.values()].sort((a, b) => a.id - b.id).slice(-200)
+        })()
     const name = account.name && (account.updatedAt ?? 0) >= (existing.updatedAt ?? 0)
       ? account.name
       : existing.name

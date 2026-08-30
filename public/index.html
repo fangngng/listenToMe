@@ -29,11 +29,14 @@
     </div>
     <button id="newAccountBtn" class="btn ghost small-btn wide-btn">＋ 新建账号</button>
     <button id="syncFromCloudBtn" class="btn ghost small-btn wide-btn" style="margin-top:8px">☁️ 从云端同步</button>
+    <button id="mergeAccBtn" class="btn ghost small-btn wide-btn" style="margin-top:8px">🔀 合并账号</button>
   </section>
 
   <section class="card">
     <h2>🕘 历史记录</h2>
     <p class="muted small" id="historyHint">每个账号本地保存最近 50 条</p>
+    <button id="growthBtn" class="btn ghost small-btn wide-btn" style="margin-bottom:8px">📈 成长曲线</button>
+    <div id="growthWrap" class="hidden"></div>
     <div id="historyList"></div>
   </section>
 </aside>
@@ -85,6 +88,7 @@
   <section class="card hidden" id="reportCard">
     <div class="report-header">
       <h2 id="reportTitle">点评报告</h2>
+      <button id="shareReportBtn" class="btn ghost small-btn">📤 分享</button>
       <button id="closeReportBtn" class="btn ghost small-btn">收起</button>
     </div>
     <div id="reportBody"></div>
@@ -105,6 +109,34 @@
     </div>
     <p class="muted small">「导入/更新」会把云端记录合并进本机（保留本机已有的音频），不会删除本地数据</p>
     <div id="syncList"></div>
+  </div>
+</div>
+
+<!-- 合并账号弹层 -->
+<div id="mergeDialog" class="modal hidden">
+  <div class="card modal-box">
+    <div class="report-header">
+      <h2>🔀 合并账号</h2>
+      <button id="mergeCloseBtn" class="icon-btn" title="关闭">✕</button>
+    </div>
+    <p class="muted small">勾选要合并的账号，它们的评测记录会移入目标账号，源账号随后被删除（不可恢复）。若源账号已同步云端，云端数据也会一并删除。</p>
+    <div class="merge-target-row">
+      <label>合并到：</label>
+      <select id="mergeTarget"></select>
+    </div>
+    <div id="mergeList"></div>
+    <button id="mergeConfirmBtn" class="btn primary wide-btn" style="margin-top:8px">合并</button>
+  </div>
+</div>
+
+<!-- 转移记录弹层 -->
+<div id="moveDialog" class="modal hidden">
+  <div class="card modal-box">
+    <div class="report-header">
+      <h2>➡️ 转移记录到…</h2>
+      <button id="moveCloseBtn" class="icon-btn" title="关闭">✕</button>
+    </div>
+    <div id="moveList"></div>
   </div>
 </div>
 
