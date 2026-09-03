@@ -42,6 +42,13 @@ const MODES = {
     dims: ['清晰度', '逻辑性', '语言质量', '自然度', '整体印象'],
     desc: '不依赖文本的综合点评：表达清晰度、语言习惯、亮点与短板',
   },
+  dialog: {
+    label: '对话互动',
+    dims: ['倾听回应', '内容切题', '互动节奏', '语气氛围', '表达质量'],
+    desc: '两人真实对话录音，点评双方互动质量（注意：无法区分说话人，AI 按内容推断）',
+    // ponytail: ASR 无说话人分离，话语归属靠 LLM 从内容推断；需精确分人时换支持 diarization 的 ASR
+    extra: '本录音为两人的真实对话。转写不区分说话人，请根据上下文推断双方话语归属后再点评。重点评价互动质量：是否倾听并回应对方、接话是否自然、有无打断或冷场、整体氛围如何。优缺点证据可引用任意一方的话语。',
+  },
 }
 
 // =========================================================
@@ -215,7 +222,7 @@ async function chatLLM(messages) {
       model: LLM_MODEL,
       messages,
       temperature: 0.4,
-      max_tokens: 8192,
+      // ponytail: 不设 max_tokens——推理模型（reasoner/glm thinking）会把额度耗在隐藏推理上，设上限反而导致 JSON 被截断
       response_format: { type: 'json_object' },
     }),
   })
@@ -278,7 +285,7 @@ function buildPrompt(modeCfg, { segments, metrics, fillers, topic, alignmentSumm
 
   const user = `请点评一段用户的${modeCfg.label}录音。
 
-【评分维度】（按此顺序）：${modeCfg.dims.join('、')}
+【评分维度】（按此顺序）：${modeCfg.dims.join('、')}${modeCfg.extra ? `\n【模式说明】${modeCfg.extra}` : ''}
 ${topic ? `\n【用户自述主题/提纲】：${topic}` : ''}
 【声学指标】
 ${metricLines.join('\n')}

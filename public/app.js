@@ -6,6 +6,7 @@ const MODES = {
   read: { label: '朗读练习', desc: '对照参考文本朗读，检查错读/漏读/多读、准确度与流利度' },
   speech: { label: '演讲练习', desc: '自由演讲或脱稿发言，分析结构逻辑、口头禅、语速与感染力' },
   general: { label: '泛用点评', desc: '不依赖文本的综合点评：表达清晰度、语言习惯、亮点与短板' },
+  dialog: { label: '对话互动', desc: '两人真实对话录音，点评倾听回应、互动节奏与氛围（AI 按内容推断说话人）' },
 }
 const STATUS_TEXT = {
   upload: '正在上传音频…',
