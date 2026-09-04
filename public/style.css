@@ -644,6 +644,18 @@ audio { width: 100%; margin-bottom: 12px; }
 
 footer { text-align: center; padding: 10px; }
 
+/* ---------- 每月打卡日历 ---------- */
+.cal-head { display: flex; align-items: center; justify-content: space-between; margin: 10px 0 6px; font-size: 13px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+.cal-cell {
+  display: flex; align-items: center; justify-content: center;
+  height: 26px; border-radius: 6px; font-size: 11px;
+  color: var(--muted); background: #f1f2f7;
+}
+.cal-on { color: #fff; font-weight: 600; background: var(--primary); }
+.cal-on[data-n="2"] { background: var(--primary-dark); }
+.cal-on[data-n="3"] { background: #3730a3; }
+
 /* ---------- 手机适配 ---------- */
 @media (max-width: 860px) {
   .layout { grid-template-columns: 1fr; }

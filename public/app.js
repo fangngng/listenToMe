@@ -1332,40 +1332,82 @@ $('growthBtn').addEventListener('click', () => {
   if (!wrap.classList.contains('hidden')) renderGrowth()
 })
 
+let calMonth = new Date()  // 打卡日历当前显示的月份
+
 async function renderGrowth() {
   const wrap = $('growthWrap')
   const recs = (await idbOp(STORE, s => s.getAll()))
     .filter(r => String(r.accountId) === String(activeAccountId) && typeof r.totalScore === 'number')
     .sort((a, b) => a.id - b.id)
-  if (recs.length < 2) {
-    wrap.innerHTML = '<p class="muted small">至少两次评测后出现曲线</p>'
-    return
+
+  let curveHtml = '<p class="muted small">至少两次评测后出现曲线</p>'
+  if (recs.length >= 2) {
+    const pts = recs.map(r => r.totalScore)
+    const avg = Math.round(pts.reduce((a, b) => a + b, 0) / pts.length)
+    const tr = trendOf(calcTrendDelta(pts))
+    const W = 340, H = 150, padL = 26, padR = 10, top = 10, bottom = 128
+    const x = i => padL + (i * (W - padL - padR)) / (pts.length - 1)
+    const y = s => top + ((100 - s) / 100) * (bottom - top)
+    const poly = pts.map((s, i) => `${x(i).toFixed(1)},${y(s).toFixed(1)}`).join(' ')
+    const grid = [0, 50, 100].map(g => `
+      <line x1="${padL}" y1="${y(g)}" x2="${W - padR}" y2="${y(g)}" stroke="#e5e7f0" stroke-width="1"/>
+      <text x="${padL - 4}" y="${y(g) + 3}" font-size="9" fill="#9ca3af" text-anchor="end">${g}</text>`).join('')
+    const dots = recs.map((r, i) => `
+      <circle cx="${x(i).toFixed(1)}" cy="${y(r.totalScore).toFixed(1)}" r="3.2" fill="#4f46e5">
+        <title>${new Date(r.date).toLocaleDateString('zh-CN')} ${esc(r.modeLabel)}：${r.totalScore} 分</title>
+      </circle>`).join('')
+    const df = d => new Date(d).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+    curveHtml = `
+      <div class="muted small" style="margin-bottom:2px">${recs.length} 次评测 · 平均 ${avg} 分 · 趋势：${tr.label}</div>
+      <svg viewBox="0 0 ${W} ${H}" class="growth-svg">
+        ${grid}
+        <line x1="${padL}" y1="${y(avg)}" x2="${W - padR}" y2="${y(avg)}" stroke="#10b981" stroke-width="1" stroke-dasharray="4 3"/>
+        <polyline points="${poly}" fill="none" stroke="#6366f1" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        ${dots}
+        <text x="${padL}" y="${H - 3}" font-size="9" fill="#9ca3af">${df(recs[0].date)}</text>
+        <text x="${W - padR}" y="${H - 3}" font-size="9" fill="#9ca3af" text-anchor="end">${df(recs[recs.length - 1].date)}</text>
+      </svg>`
   }
-  const pts = recs.map(r => r.totalScore)
-  const avg = Math.round(pts.reduce((a, b) => a + b, 0) / pts.length)
-  const tr = trendOf(calcTrendDelta(pts))
-  const W = 340, H = 150, padL = 26, padR = 10, top = 10, bottom = 128
-  const x = i => padL + (i * (W - padL - padR)) / (pts.length - 1)
-  const y = s => top + ((100 - s) / 100) * (bottom - top)
-  const poly = pts.map((s, i) => `${x(i).toFixed(1)},${y(s).toFixed(1)}`).join(' ')
-  const grid = [0, 50, 100].map(g => `
-    <line x1="${padL}" y1="${y(g)}" x2="${W - padR}" y2="${y(g)}" stroke="#e5e7f0" stroke-width="1"/>
-    <text x="${padL - 4}" y="${y(g) + 3}" font-size="9" fill="#9ca3af" text-anchor="end">${g}</text>`).join('')
-  const dots = recs.map((r, i) => `
-    <circle cx="${x(i).toFixed(1)}" cy="${y(r.totalScore).toFixed(1)}" r="3.2" fill="#4f46e5">
-      <title>${new Date(r.date).toLocaleDateString('zh-CN')} ${esc(r.modeLabel)}：${r.totalScore} 分</title>
-    </circle>`).join('')
-  const df = d => new Date(d).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
-  wrap.innerHTML = `
-    <div class="muted small" style="margin-bottom:2px">${recs.length} 次评测 · 平均 ${avg} 分 · 趋势：${tr.label}</div>
-    <svg viewBox="0 0 ${W} ${H}" class="growth-svg">
-      ${grid}
-      <line x1="${padL}" y1="${y(avg)}" x2="${W - padR}" y2="${y(avg)}" stroke="#10b981" stroke-width="1" stroke-dasharray="4 3"/>
-      <polyline points="${poly}" fill="none" stroke="#6366f1" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-      ${dots}
-      <text x="${padL}" y="${H - 3}" font-size="9" fill="#9ca3af">${df(recs[0].date)}</text>
-      <text x="${W - padR}" y="${H - 3}" font-size="9" fill="#9ca3af" text-anchor="end">${df(recs[recs.length - 1].date)}</text>
-    </svg>`
+
+  wrap.innerHTML = curveHtml + renderCalendar(recs)
+
+  // 翻月后重渲染（成长曲线与日历一起刷新）
+  const step = n => { calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + n, 1); renderGrowth() }
+  $('calPrev').addEventListener('click', () => step(-1))
+  $('calNext').addEventListener('click', () => step(1))
+}
+
+// 每月打卡日历：当天有评测记录即点亮，颜色深浅按次数分档
+function renderCalendar(recs) {
+  const byDay = new Map()
+  for (const r of recs) {
+    if (!r.date) continue
+    const d = new Date(r.date)
+    const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+    byDay.set(k, (byDay.get(k) || 0) + 1)
+  }
+  const y = calMonth.getFullYear(), m = calMonth.getMonth()
+  const daysInMonth = new Date(y, m + 1, 0).getDate()
+  const startOffset = (new Date(y, m, 1).getDay() + 6) % 7  // 周一为首列
+  const cells = ['<span class="cal-cell muted"></span>'.repeat(startOffset)]
+  let checked = 0
+  for (let d = 1; d <= daysInMonth; d++) {
+    const n = byDay.get(`${y}-${m}-${d}`) || 0
+    if (n) checked++
+    cells.push(n
+      ? `<span class="cal-cell cal-on" data-n="${Math.min(n, 3)}" title="${d} 日 · ${n} 次评测">${d}</span>`
+      : `<span class="cal-cell">${d}</span>`)
+  }
+  return `
+    <div class="cal-head">
+      <button id="calPrev" class="icon-btn" title="上个月">‹</button>
+      <span>${y} 年 ${m + 1} 月 · 打卡 ${checked} 天</span>
+      <button id="calNext" class="icon-btn" title="下个月">›</button>
+    </div>
+    <div class="cal-grid">
+      ${['一', '二', '三', '四', '五', '六', '日'].map(w => `<span class="cal-cell muted">${w}</span>`).join('')}
+      ${cells.join('')}
+    </div>`
 }
 
 // =========================================================
