@@ -450,11 +450,11 @@ function fbCard(item, cls) {
 
 function renderSentenceTable(sents) {
   return `<table class="sent-table">
-    <thead><tr><th>时间</th><th>原文</th><th>你的朗读</th><th>结果</th></tr></thead>
+    <thead><tr><th>时间</th><th>原文（红字上方为听到的读音）</th><th>你的朗读</th><th>结果</th></tr></thead>
     <tbody>${sents.map((s, i) => {
       const time = s.start != null
         ? `<button class="time-link" data-seek="${s.start}">${fmtTime(s.start)}</button>` : '—'
-      const refCell = s.refText ? esc(s.refText) : `<span class="missed-cell">（无，多读的句子）</span>`
+      const refCell = s.refText ? renderRefChars(s) : `<span class="missed-cell">（无，多读的句子）</span>`
       const hypCell = s.text
         ? esc(s.text)
         : `<span class="missed-cell">（漏读）</span>`
@@ -464,6 +464,19 @@ function renderSentenceTable(sents) {
       </tr>`
     }).join('')}</tbody>
   </table>`
+}
+
+// 原文逐字渲染：错音字标红并在上方标出听到的读音，漏读字虚线下划（标点原样保留）
+function renderRefChars(s) {
+  if (!s.chars?.length) return esc(s.refText)
+  let k = 0
+  return [...s.refText].map(ch => {
+    if (!/[一-鿿]/.test(ch)) return esc(ch)
+    const c = s.chars[k++] || { status: 'ok' }
+    if (c.status === 'ok') return esc(ch)
+    if (c.status === 'missed') return `<span class="pchar missed" title="未读到">${esc(ch)}</span>`
+    return `<span class="pchar wrong" data-hyp="${esc(c.hypPy)}" title="听成「${esc(c.hypCh)}」${esc(c.hypPy)}，${esc(c.wrongPart)}错">${esc(ch)}</span>`
+  }).join('')
 }
 
 function renderSentenceList(sents) {

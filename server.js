@@ -3,6 +3,7 @@ import multer from 'multer'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { pinyin } from 'pinyin-pro'
 import 'dotenv/config'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -559,16 +560,76 @@ function alignSentences(refText, hypSegments) {
 
   const sentences = pairs.map(({ ref, hyp, sim }) => {
     if (ref && hyp) {
+      const chars = alignChars(ref.raw, hyp.text)
       return {
         text: hyp.text, start: hyp.start, end: hyp.end,
-        refText: ref.raw,
-        status: sim >= 0.95 ? 'correct' : 'wrong',
+        refText: ref.raw, chars,
+        status: sim >= 0.95 && !chars.some(c => c.status === 'wrong') ? 'correct' : 'wrong',
       }
     }
     if (ref) return { text: '', start: null, end: null, refText: ref.raw, status: 'missed' }
     return { text: hyp.text, start: hyp.start, end: hyp.end, refText: null, status: 'extra' }
   })
   return { sentences }
+}
+
+/**
+ * 朗读模式：参考句 vs 转写句 的逐字拼音对齐（同 NW 思路，字粒度）。
+ * 返回 chars（按参考文本汉字顺序）: [{ch, py, status, hypCh?, hypPy?, wrongPart?}]
+ * status: ok（含同音字替代）| wrong（拼音不同，标出声母/韵母/声调差异）| missed（该字未读到）
+ * ponytail: 拼音 diff 是近似——分不清"真读错"和"ASR 听错/同音字"；要精确发音评分需接专业评测 API
+ */
+function alignChars(refRaw, hypRaw) {
+  const grab = s => {
+    const chars = [...String(s).matchAll(/[一-鿿]/g)].map(m => m[0])
+    if (!chars.length) return []
+    return pinyin(chars.join(''), { type: 'all' })
+      // 韵母去掉声调符号再比，否则声调错会被误报成韵母错
+      .map(x => ({ ch: x.origin, py: x.pinyin, i: x.initial, f: x.final.normalize('NFD').replace(/\p{M}/gu, ''), n: x.num }))
+  }
+  const refs = grab(refRaw), hyps = grab(hypRaw)
+  const M = refs.length, N = hyps.length
+  const cost = (a, b) => a.ch === b.ch ? 0 : (a.py === b.py ? 0.5 : 2)
+  const GAP = 1.2
+  const dp = Array.from({ length: M + 1 }, () => new Array(N + 1).fill(Infinity))
+  dp[0][0] = 0
+  for (let i = 0; i <= M; i++) {
+    for (let j = 0; j <= N; j++) {
+      if (!i && !j) continue
+      let best = Infinity
+      if (i) best = Math.min(best, dp[i - 1][j] + GAP)
+      if (j) best = Math.min(best, dp[i][j - 1] + GAP)
+      if (i && j) best = Math.min(best, dp[i - 1][j - 1] + cost(refs[i - 1], hyps[j - 1]))
+      dp[i][j] = best
+    }
+  }
+
+  // 回溯（倒序收集后反转）
+  const pairs = []
+  let i = M, j = N
+  while (i > 0 || j > 0) {
+    if (i && j && Math.abs(dp[i][j] - (dp[i - 1][j - 1] + cost(refs[i - 1], hyps[j - 1]))) < 1e-9) {
+      pairs.push([refs[i - 1], hyps[j - 1]]); i--; j--; continue
+    }
+    if (i && Math.abs(dp[i][j] - (dp[i - 1][j] + GAP)) < 1e-9) {
+      pairs.push([refs[i - 1], null]); i--; continue
+    }
+    pairs.push([null, hyps[j - 1]]); j--
+  }
+  pairs.reverse()
+
+  const chars = []
+  for (const [r, h] of pairs) {
+    if (!r) continue // 多读的转写字不进 chars（原文列只标参考侧）
+    if (!h) { chars.push({ ch: r.ch, py: r.py, status: 'missed' }); continue }
+    if (r.ch === h.ch || r.py === h.py) { chars.push({ ch: r.ch, py: r.py, status: 'ok' }); continue }
+    const parts = []
+    if (r.i !== h.i) parts.push('声母')
+    if (r.f !== h.f) parts.push('韵母')
+    if (r.n !== h.n) parts.push('声调')
+    chars.push({ ch: r.ch, py: r.py, status: 'wrong', hypCh: h.ch, hypPy: h.py, wrongPart: parts.join('+') || '声调' })
+  }
+  return chars
 }
 
 function buildAlignmentSummary({ sentences }) {
@@ -580,6 +641,13 @@ function buildAlignmentSummary({ sentences }) {
   const lines = [
     `- 读对：${correct.length}/${total} 句；读错（含明显增删字）：${wrong.length} 句；漏读：${missed.length} 句；多读：${extra.length} 句`,
   ]
+  const wrongChars = sentences.flatMap(s => (s.chars || []).filter(c => c.status === 'wrong'))
+  if (wrongChars.length) {
+    const byPart = { 声母: 0, 韵母: 0, 声调: 0 }
+    for (const c of wrongChars) for (const p of ['声母', '韵母', '声调']) if (c.wrongPart.includes(p)) byPart[p]++
+    lines.push(`- 疑似错音 ${wrongChars.length} 处（声母 ${byPart.声母} / 韵母 ${byPart.韵母} / 声调 ${byPart.声调}），转写为准仅供参考：`)
+    wrongChars.slice(0, 10).forEach(c => lines.push(`  · "${c.ch}"(${c.py}) 听成 "${c.hypCh}"(${c.hypPy})，${c.wrongPart}错`))
+  }
   if (wrong.length) {
     lines.push('- 读错的句子（原文 -> 实际朗读）：')
     wrong.slice(0, 10).forEach(s => lines.push(`  · "${s.refText}" -> "${s.text}"`))
@@ -596,7 +664,7 @@ function buildAlignmentSummary({ sentences }) {
 }
 
 // =========================================================
-export { alignSentences, splitSentences, countFillers, similarity, normalizeAsr }
+export { alignSentences, alignChars, splitSentences, countFillers, similarity, normalizeAsr }
 
 if (!process.env.NO_LISTEN) {
   app.listen(PORT, () => {

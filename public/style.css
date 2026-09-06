@@ -644,6 +644,16 @@ audio { width: 100%; margin-bottom: 12px; }
 
 footer { text-align: center; padding: 10px; }
 
+/* ---------- 逐字拼音对照（朗读模式） ---------- */
+.pchar { display: inline-block; min-width: 1em; text-align: center; vertical-align: bottom; }
+.pchar.wrong { color: var(--red); font-weight: 600; }
+.pchar.wrong::after {
+  content: attr(data-hyp);
+  display: block; font-size: 10px; line-height: 1.1;
+  color: var(--red); font-weight: 400; white-space: nowrap;
+}
+.pchar.missed { color: var(--muted); border-bottom: 2px dashed var(--amber); }
+
 /* ---------- 每月打卡日历 ---------- */
 .cal-head { display: flex; align-items: center; justify-content: space-between; margin: 10px 0 6px; font-size: 13px; }
 .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
