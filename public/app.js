@@ -764,6 +764,18 @@ $('accountList').addEventListener('click', async e => {
 // 云端同步（上传/拉取/合并；音频不参与同步）
 // =========================================================
 
+/** 云端账号密钥（服务端 2026-09 起要求）：本地按账号 id 存 localStorage，读写云端时携带 */
+const secretKey = id => `listentome:secret:${id}`
+const getSecret = id => localStorage.getItem(secretKey(id)) || null
+const setSecret = (id, s) => { if (s) localStorage.setItem(secretKey(id), s) }
+
+/** 生成客户端密钥（32 字符 base64url），新账号首次上传时随请求带给服务端绑定 */
+function genSecret() {
+  const b = new Uint8Array(24)
+  crypto.getRandomValues(b)
+  return btoa(String.fromCharCode(...b)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
+}
+
 /** 上传本地账号及其全部记录到云端（默认按记录 id 与云端合并；replace=true 时以本地列表整体替换云端记录） */
 async function uploadAccount(id, replace = false) {
   const acc = accounts.find(a => String(a.id) === String(id))
@@ -777,21 +789,41 @@ async function uploadAccount(id, replace = false) {
     records: recs.map(({ audio, ...rest }) => rest),  // 音频不上传
     ...(replace ? { replace: true } : {}),
   }
+  const headers = { 'Content-Type': 'application/json' }
+  // 已有密钥直接用；首次上传（服务端要求新账号带密钥）则生成并预存
+  let knownSecret = getSecret(id)
+  if (!knownSecret && !isLinked(id)) {
+    knownSecret = genSecret()
+    setSecret(id, knownSecret)
+  }
+  if (knownSecret) headers['X-Account-Secret'] = knownSecret
   const r = await fetch('api/accounts', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(payload),
   })
-  if (!r.ok) throw new Error((await r.json()).error || '上传失败')
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(data.error || '上传失败')
+  // 服务端首次创建/迁移时下发密钥，存起来供后续请求使用
+  if (data.secret) setSecret(id, data.secret)
   await loadCloudAccounts()
   await renderAccounts()
 }
 
 /** 拉取云端账号：本地无则创建（沿用云端 id，完成关联），有则合并记录（保留本机音频） */
 async function pullAccount(id) {
-  const r = await fetch('api/accounts/' + id)
-  if (!r.ok) throw new Error((await r.json()).error || '拉取失败')
-  const { account, records } = await r.json()
+  const headers = {}
+  // 已有密钥直接用；新设备首次导入（无密钥）则生成一个带给服务端绑定
+  let knownSecret = getSecret(id)
+  if (!knownSecret) {
+    knownSecret = genSecret()
+    setSecret(id, knownSecret)
+  }
+  headers['X-Account-Secret'] = knownSecret
+  const r = await fetch('api/accounts/' + id, { headers })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(data.error || '拉取失败')
+  const { account, records } = data
 
   let acc = accounts.find(a => String(a.id) === String(account.id))
   if (!acc) {
@@ -872,7 +904,15 @@ $('syncList').addEventListener('click', async e => {
     const id = delC.dataset.delCloud
     const a = cloudAccounts.find(x => String(x.id) === String(id))
     if (confirm(`删除云端账号「${a?.name || ''}」？\n本机数据不受影响。`)) {
-      await fetch('api/accounts/' + id, { method: 'DELETE' })
+      const headers = {}
+      const knownSecret = getSecret(id)
+      if (knownSecret) headers['X-Account-Secret'] = knownSecret
+      const r = await fetch('api/accounts/' + id, { method: 'DELETE', headers })
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}))
+        showError(d.error || '删除云端失败')
+        return
+      }
       await loadCloudAccounts()
       await renderSyncDialog()
       await renderAccounts()
@@ -941,7 +981,12 @@ async function confirmMerge() {
   for (const sid of sourceIds) {
     const src = accounts.find(a => String(a.id) === String(sid))
     if (!src) continue
-    if (isLinked(src.id)) fetch('api/accounts/' + src.id, { method: 'DELETE' }).catch(e => console.warn('云端删除失败', e))
+    if (isLinked(src.id)) {
+      const headers = {}
+      const s = getSecret(src.id)
+      if (s) headers['X-Account-Secret'] = s
+      fetch('api/accounts/' + src.id, { method: 'DELETE', headers }).catch(e => console.warn('云端删除失败', e))
+    }
     await idbOp(ACCOUNTS, s => s.delete(src.id))
   }
   $('mergeDialog').classList.add('hidden')
@@ -1263,6 +1308,8 @@ async function saveHistory(report) {
 }
 
 async function trimHistory() {
+  // 与云端上限 200 对齐：本地修剪超出 200 的记录时，若账号已关联云端会一并推送，
+  // 避免「本地 50 / 云端 200」反复同步时静默丢历史
   const all = await idbOp(STORE, store => store.getAll())
   const byAcc = new Map()
   for (const r of all) {
@@ -1271,9 +1318,9 @@ async function trimHistory() {
     byAcc.get(r.accountId).push(r)
   }
   for (const recs of byAcc.values()) {
-    if (recs.length > 50) {
+    if (recs.length > 200) {
       recs.sort((a, b) => a.id - b.id)
-      for (const r of recs.slice(0, recs.length - 50)) {
+      for (const r of recs.slice(0, recs.length - 200)) {
         await idbOp(STORE, store => store.delete(r.id))
       }
     }
@@ -1320,6 +1367,13 @@ $('historyList').addEventListener('click', async e => {
   const del = e.target.closest('[data-del]')
   if (del) {
     e.stopPropagation()
+    // 含本地音频的记录删除不可恢复，弹确认（音频不上云，删了就没了）
+    const rec = await idbOp(STORE, store => store.get(Number(del.dataset.del)))
+    const hasAudio = !!rec?.audio
+    const msg = hasAudio
+      ? '删除这条记录及其本地音频？\n（音频只存在本机，删除后不可恢复）'
+      : '删除这条记录？'
+    if (!confirm(msg)) return
     await idbOp(STORE, store => store.delete(Number(del.dataset.del)))
     await renderHistory()
     await renderAccounts()

@@ -2,16 +2,47 @@ import express from 'express'
 import multer from 'multer'
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { pinyin } from 'pinyin-pro'
 import 'dotenv/config'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+// ---------- 简易限流（无需额外依赖）：单 IP 固定窗口计数 ----------
+// 防外部滥用刷爆 ASR/LLM API 额度；转写/分析是主要成本入口
+const rateBuckets = new Map()
+function rateLimit(maxPerWindow, windowMs) {
+  return (req, res, next) => {
+    const now = Date.now()
+    const key = req.ip || req.socket.remoteAddress || 'unknown'
+    let b = rateBuckets.get(key)
+    if (!b || now > b.reset) { b = { count: 0, reset: now + windowMs }; rateBuckets.set(key, b) }
+    if (++b.count > maxPerWindow) {
+      return res.status(429).json({ error: '请求过于频繁，请稍后再试' })
+    }
+    next()
+  }
+}
+// 定期清理过期桶，防内存缓慢增长
+setInterval(() => {
+  const now = Date.now()
+  for (const [k, b] of rateBuckets) if (now > b.reset) rateBuckets.delete(k)
+}, 10 * 60 * 1000).unref()
+
 const app = express()
 const PORT = process.env.PORT || 3000
 
 app.use(express.json({ limit: '4mb' }))
-app.use(express.static(path.join(__dirname, 'public')))
+// 静态资源缓存：入口 app.js 短缓存（发版即生效），其他静态资源长缓存
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    if (/app\.js$/.test(filePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=3600, must-revalidate')
+    } else if (/\.(css|js|png|jpe?g|gif|webp|svg|ico|woff2?)$/.test(filePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+    }
+  },
+}))
 
 // ---------- 配置 ----------
 const ASR_BASE_URL = (process.env.ASR_BASE_URL || 'https://api.siliconflow.cn/v1').replace(/\/+$/, '')
@@ -21,9 +52,39 @@ const LLM_BASE_URL = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com
 const LLM_API_KEY = process.env.DEEPSEEK_API_KEY || ''
 const LLM_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-chat'
 
+// 音频类型白名单：防任意类型文件消耗 ASR 额度（含 Magic bytes 嗅探）
+const ALLOWED_AUDIO_MIMES = new Set([
+  'audio/wav', 'audio/x-wav', 'audio/wave',
+  'audio/mpeg', 'audio/mp3',
+  'audio/mp4', 'audio/x-m4a', 'audio/m4a',
+  'audio/webm',
+  'audio/ogg',
+  'audio/flac',
+])
+class AudioTypeError extends Error { constructor(mime) { super(`不支持的音频类型：${mime}`); this.code = 'AUDIO_TYPE' } }
+function sniffAudioOk(buf, mime) {
+  if (!buf || buf.length < 12) return false
+  const h = buf.subarray(0, 12)
+  if (h[0] === 0x52 && h[1] === 0x49 && h[2] === 0x46 && h[3] === 0x46 &&  // RIFF
+      h[8] === 0x57 && h[9] === 0x41 && h[10] === 0x56 && h[11] === 0x45) return true  // WAVE
+  if (h[0] === 0xFF && (h[1] & 0xE0) === 0xE0) return true                // MP3 frame sync
+  if (h[0] === 0x49 && h[1] === 0x44 && h[2] === 0x33) return true        // ID3 (mp3)
+  if (h[4] === 0x66 && h[5] === 0x74 && h[6] === 0x79 && h[7] === 0x70) return true  // ftyp (m4a/mp4)
+  if (h[0] === 0x1A && h[1] === 0x45 && h[2] === 0xDF && h[3] === 0xA3) return true  // EBML (webm)
+  if (h[0] === 0x4F && h[1] === 0x67 && h[2] === 0x67 && h[3] === 0x53) return true  // OggS
+  if (h[0] === 0x66 && h[1] === 0x4C && h[2] === 0x61 && h[3] === 0x43) return true  // fLaC
+  return ALLOWED_AUDIO_MIMES.has(mime)  // 未知格式回退到 mime 白名单（容忍少数容器）
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 30 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!ALLOWED_AUDIO_MIMES.has(file.mimetype)) {
+      return cb(new AudioTypeError(file.mimetype))
+    }
+    cb(null, true)
+  },
 })
 
 // ---------- 模式定义 ----------
@@ -55,10 +116,24 @@ const MODES = {
 // =========================================================
 // 转写
 // =========================================================
-app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
+app.post('/api/transcribe', rateLimit(30, 60 * 1000), (req, res, next) => {
+  upload.single('audio')(req, res, err => {
+    // multer 错误统一转 JSON（含 fileFilter 的类型拒绝），前端靠 r.json() 解析
+    if (err) {
+      if (err.code === 'AUDIO_TYPE') return res.status(415).json({ error: err.message })
+      if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: '文件超过 30MB 上限' })
+      return res.status(400).json({ error: '上传失败：' + err.message })
+    }
+    next()
+  })
+}, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: '缺少音频文件' })
     if (!ASR_API_KEY) return res.status(500).json({ error: '服务端未配置 ASR_API_KEY，请在 .env 中填写' })
+    // Magic bytes 二次校验（fileFilter 只看声明的 mimetype，可伪造）
+    if (!sniffAudioOk(req.file.buffer, req.file.mimetype)) {
+      return res.status(415).json({ error: '文件内容不是支持的音频格式' })
+    }
 
     const durationSec = parseFloat(req.body?.duration) || 0
     const filename = req.file.originalname || 'audio.wav'
@@ -141,7 +216,7 @@ function normalizeAsr(json, durationSec) {
 // =========================================================
 // 点评分析
 // =========================================================
-app.post('/api/analyze', async (req, res) => {
+app.post('/api/analyze', rateLimit(30, 60 * 1000), async (req, res) => {
   try {
     if (!LLM_API_KEY) return res.status(500).json({ error: '服务端未配置 DEEPSEEK_API_KEY，请在 .env 中填写' })
 
@@ -384,6 +459,42 @@ function sanitizeRecord(r) {
   }
 }
 
+// ---------- 云端账号鉴权 ----------
+// 账号创建时服务端生成不可猜测的 secret 并持久化；客户端之后对
+// GET/DELETE 和所有冲突性写都需带 secret（通过 X-Account-Secret 头或 query.secret）。
+// 首次上传（云端无记录）时：请求带 secret 则采用，否则服务端生成并随响应下发。
+// 对 2026-09 之前创建的无 secret 旧账号：首次带新 secret 的写请求会顺带绑定（向后兼容）。
+
+const validSecret = s => typeof s === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(s)
+const newSecret = () => crypto.randomBytes(24).toString('base64url')  // 32 字符
+
+/** 取出请求里的 secret（头优先，兼容 query） */
+function reqSecret(req) {
+  return req.get('X-Account-Secret') || req.query?.secret || req.body?.secret || null
+}
+
+/**
+ * 校验请求是否有权操作账号 id。
+ * 返回 { ok, existing, bindSecret?, error?, status? }
+ */
+function checkAccountAuth(req, id) {
+  const existing = readCloudAccount(id)
+  const s = reqSecret(req)
+  if (!existing) {
+    // 新账号：必须带合法 secret 才能创建（防 id 抢注/枚举）
+    if (!validSecret(s)) return { ok: false, status: 403, error: '需要合法的账号密钥（X-Account-Secret）' }
+    return { ok: true, existing: null, bindSecret: s }
+  }
+  if (existing.secret) {
+    // 已绑定密钥：必须匹配
+    if (s !== existing.secret) return { ok: false, status: 403, error: '账号密钥不匹配' }
+    return { ok: true, existing }
+  }
+  // 旧数据无密钥：首次带合法密钥的请求绑定（向后兼容迁移窗口）
+  if (validSecret(s)) return { ok: true, existing, bindSecret: s }
+  return { ok: false, status: 403, error: '该账号需要绑定密钥，请重新同步（将自动升级）' }
+}
+
 app.get('/api/accounts', (req, res) => {
   const group = String(req.query.group || '')
   const list = []
@@ -398,20 +509,31 @@ app.get('/api/accounts', (req, res) => {
 
 app.get('/api/accounts/:id', (req, res) => {
   if (!validCloudId(req.params.id)) return res.status(400).json({ error: '非法账号 id' })
-  const a = readCloudAccount(req.params.id)
-  if (!a) return res.status(404).json({ error: '云端账号不存在' })
-  res.json({ account: { id: a.id, name: a.name, createdAt: a.createdAt }, records: a.records })
+  const existing = readCloudAccount(req.params.id)
+  if (!existing) return res.status(404).json({ error: '云端账号不存在' })
+  const s = reqSecret(req)
+  if (existing.secret) {
+    if (s !== existing.secret) return res.status(403).json({ error: '账号密钥不匹配' })
+  } else if (validSecret(s)) {
+    // 旧账号无密钥：本次合法密钥请求顺带绑定（新设备导入即绑定）
+    writeCloudAccount({ ...existing, secret: s })
+  } else {
+    return res.status(403).json({ error: '该账号需要密钥才能读取，请先在原设备上同步一次（自动升级）' })
+  }
+  res.json({ account: { id: existing.id, name: existing.name, createdAt: existing.createdAt }, records: existing.records })
 })
 
-app.post('/api/accounts', (req, res) => {
+app.post('/api/accounts', rateLimit(120, 60 * 1000), (req, res) => {
   try {
     const account = req.body?.account || {}
     const id = account.id
     if (!validCloudId(id)) return res.status(400).json({ error: '非法账号 id' })
+    const auth = checkAccountAuth(req, id)
+    if (!auth.ok) return res.status(auth.status).json({ error: auth.error })
     const incoming = (Array.isArray(req.body?.records) ? req.body.records : [])
       .map(sanitizeRecord)
       .filter(r => r.id && r.report)
-    const existing = readCloudAccount(id) || {
+    const existing = auth.existing || {
       id,
       name: account.name || '未命名',
       createdAt: account.createdAt || new Date().toISOString(),
@@ -431,8 +553,13 @@ app.post('/api/accounts', (req, res) => {
       : existing.name
     // 组归属：请求带 group 则更新（上传时归入当前组），否则保留云端原组
     const group = req.body?.group != null ? String(req.body.group).slice(0, 32) : (existing.group || '')
-    writeCloudAccount({ id, name, group, createdAt: existing.createdAt, updatedAt: Date.now(), records })
-    res.json({ ok: true, count: records.length })
+    // 密钥：已绑定则保留；本次请求携带的新密钥（新建/旧数据迁移）则绑定
+    const secret = existing.secret || auth.bindSecret || newSecret()
+    writeCloudAccount({ id, name, group, createdAt: existing.createdAt, updatedAt: Date.now(), records, secret })
+    // 首次创建/迁移时把密钥下发给客户端（之后客户端凭此密钥读写）
+    const body = { ok: true, count: records.length }
+    if (!existing.secret) body.secret = secret
+    res.json(body)
   } catch (err) {
     console.error('[accounts:post]', err)
     res.status(500).json({ error: '保存失败：' + err.message })
@@ -441,6 +568,8 @@ app.post('/api/accounts', (req, res) => {
 
 app.delete('/api/accounts/:id', (req, res) => {
   if (!validCloudId(req.params.id)) return res.status(400).json({ error: '非法账号 id' })
+  const auth = checkAccountAuth(req, req.params.id)
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error })
   const file = accountFile(req.params.id)
   if (fs.existsSync(file)) fs.unlinkSync(file)
   res.json({ ok: true })
@@ -536,25 +665,23 @@ function alignSentences(refText, hypSegments) {
     }
   }
 
-  // 回溯
+  // 回溯（平局时优先 gap：漏读/多读应判为「漏+多」而非「错读」，更符合朗读实际）
   const pairs = []
   let i = M, j = N
   while (i > 0 || j > 0) {
-    if (i > 0 && j > 0) {
-      const sim = similarity(refs[i - 1].norm, hyps[j - 1].norm)
-      if (Math.abs(dp[i][j] - (dp[i - 1][j - 1] + (1 - sim) * MATCH_COST)) < 1e-9) {
-        pairs.push({ ref: refs[i - 1], hyp: hyps[j - 1], sim })
-        i--; j--
-        continue
-      }
-    }
     if (i > 0 && Math.abs(dp[i][j] - (dp[i - 1][j] + GAP)) < 1e-9) {
       pairs.push({ ref: refs[i - 1], hyp: null })
       i--
       continue
     }
-    pairs.push({ ref: null, hyp: hyps[j - 1] })
-    j--
+    if (j > 0 && Math.abs(dp[i][j] - (dp[i][j - 1] + GAP)) < 1e-9) {
+      pairs.push({ ref: null, hyp: hyps[j - 1] })
+      j--
+      continue
+    }
+    const sim = similarity(refs[i - 1].norm, hyps[j - 1].norm)
+    pairs.push({ ref: refs[i - 1], hyp: hyps[j - 1], sim })
+    i--; j--
   }
   pairs.reverse()
 
@@ -604,17 +731,17 @@ function alignChars(refRaw, hypRaw) {
     }
   }
 
-  // 回溯（倒序收集后反转）
+  // 回溯（平局时优先 gap，与 alignSentences 一致：漏读/多读优先判「漏+多」）
   const pairs = []
   let i = M, j = N
   while (i > 0 || j > 0) {
-    if (i && j && Math.abs(dp[i][j] - (dp[i - 1][j - 1] + cost(refs[i - 1], hyps[j - 1]))) < 1e-9) {
-      pairs.push([refs[i - 1], hyps[j - 1]]); i--; j--; continue
-    }
     if (i && Math.abs(dp[i][j] - (dp[i - 1][j] + GAP)) < 1e-9) {
       pairs.push([refs[i - 1], null]); i--; continue
     }
-    pairs.push([null, hyps[j - 1]]); j--
+    if (j && Math.abs(dp[i][j] - (dp[i][j - 1] + GAP)) < 1e-9) {
+      pairs.push([null, hyps[j - 1]]); j--; continue
+    }
+    pairs.push([refs[i - 1], hyps[j - 1]]); i--; j--
   }
   pairs.reverse()
 
