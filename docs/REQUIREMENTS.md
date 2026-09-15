@@ -117,7 +117,13 @@
 - 对齐摘要新增错音统计（声母/韵母/声调分项计数 + 最多 10 个例字）进 LLM prompt，供点评引用
 - 局限（ponytail 已标记）：拼音 diff 无法区分"真读错"与"ASR 听错/同音字"，且 ASR 语言模型常把读错的音转写成正确的字——精确发音评分需接专业评测 API（讯飞 ISE / 腾讯云 SOE），见「后续迭代」
 
-### 3.12 后续迭代（v2+，不在 MVP 内）
+### 3.13 PWA（v1.5 已实现）
+- manifest + 图标（`scripts/make-icons.mjs` 纯 Buffer 写 PNG 生成声纹波形图标，无图像依赖）+ Service Worker
+- 「添加到主屏幕」后全屏 standalone 运行；iOS 走 apple-touch-icon
+- SW 策略：外壳资源（HTML/JS/CSS/图标）stale-while-revalidate——先回缓存保证秒开、后台拉新；`/api/` 与非 GET 一律直连不缓存（应用本质需在线）
+- 注册仅在 https 下进行（localhost 例外由浏览器处理），失败静默
+
+### 3.14 后续迭代（v2+，不在 MVP 内）
 - 发音音素级评分（专业语音评测服务）
 - 跟读对比：原声示范 + 用户模仿打分
 - 练习目标与打卡

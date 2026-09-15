@@ -31,14 +31,16 @@ setInterval(() => {
 
 const app = express()
 const PORT = process.env.PORT || 3000
+// nginx 反代在前面：取 X-Forwarded-For 作为限流 key，否则全站共享 127.0.0.1 一个桶
+app.set('trust proxy', 1)
 
 app.use(express.json({ limit: '4mb' }))
-// 静态资源缓存：入口 app.js 短缓存（发版即生效），其他静态资源长缓存
+// 静态资源缓存：JS/CSS 无内容哈希、会改版 → 短缓存；图标等二进制基本不变 → 长缓存
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, filePath) => {
-    if (/app\.js$/.test(filePath)) {
+    if (/\.(css|js)$/.test(filePath)) {
       res.setHeader('Cache-Control', 'public, max-age=3600, must-revalidate')
-    } else if (/\.(css|js|png|jpe?g|gif|webp|svg|ico|woff2?)$/.test(filePath)) {
+    } else if (/\.(png|jpe?g|gif|webp|svg|ico|woff2?)$/.test(filePath)) {
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
     }
   },

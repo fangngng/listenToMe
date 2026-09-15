@@ -1619,3 +1619,8 @@ function esc(s) {
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
 }
+
+// PWA：注册 Service Worker（仅 https/localhost 生效，失败静默）
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {})
+}

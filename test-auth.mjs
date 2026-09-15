@@ -15,7 +15,8 @@ const { default: app } = await import('./server.js').then(() => ({ default: null
 const { spawn } = await import('node:child_process')
 const PORT = 13333
 const srv = spawn('node', ['server.js'], {
-  env: { ...process.env, PORT: String(PORT), DATA_DIR: tmpData, ASR_API_KEY: 'x', DEEPSEEK_API_KEY: 'x' },
+  // NO_LISTEN 置空：顶层 import 时避免占端口，但子进程必须真正监听
+  env: { ...process.env, PORT: String(PORT), NO_LISTEN: '', DATA_DIR: tmpData, ASR_API_KEY: 'x', DEEPSEEK_API_KEY: 'x' },
   stdio: 'pipe',
 })
 srv.stderr.on('data', d => process.stderr.write('[srv] ' + d))
@@ -74,6 +75,12 @@ check('DELETE 带密钥成功', r.status === 200)
 r = await fetch(`${base}/api/accounts/${accId}`, { headers: { 'X-Account-Secret': secret } })
 check('已删账号 GET 404', r.status === 404)
 
+// --- mimetype 白名单（须在限流循环前测，否则配额已耗尽只会收到 429） ---
+const fd2 = new FormData()
+fd2.append('audio', new Blob([Buffer.from('MZ' + 'x'.repeat(100))], { type: 'application/x-msdownload' }), 'evil.exe')
+r = await fetch(`${base}/api/transcribe`, { method: 'POST', body: fd2 })
+check('非音频 mimetype 被拒', r.status === 415)
+
 // --- 限流（transcribe 30/min） ---
 let hit429 = false
 for (let i = 0; i < 35; i++) {
@@ -84,17 +91,13 @@ for (let i = 0; i < 35; i++) {
 }
 check('transcribe 限流 429', hit429)
 
-// --- mimetype 白名单 ---
-const fd2 = new FormData()
-fd2.append('audio', new Blob([Buffer.from('MZ' + 'x'.repeat(100))], { type: 'application/x-msdownload' }), 'evil.exe')
-r = await fetch(`${base}/api/transcribe`, { method: 'POST', body: fd2 })
-check('非音频 mimetype 被拒', r.status === 500 || r.status === 415 || r.status === 400)
-
-// --- 缓存头 ---
+// --- 缓存头：JS/CSS 短缓存（会改版），图标长缓存 ---
 r = await fetch(`${base}/app.js`)
 check('app.js 短缓存', (r.headers.get('cache-control') || '').includes('3600'))
 r = await fetch(`${base}/style.css`)
-check('style.css 长缓存', (r.headers.get('cache-control') || '').includes('immutable'))
+check('style.css 短缓存', (r.headers.get('cache-control') || '').includes('3600'))
+r = await fetch(`${base}/icon-512.png`)
+check('图标长缓存 immutable', (r.headers.get('cache-control') || '').includes('immutable'))
 
 srv.kill()
 const failed = results.filter(([, ok]) => !ok)
