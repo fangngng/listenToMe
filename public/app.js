@@ -195,6 +195,10 @@ function encodeWav(samples) {
   return buf
 }
 
+// Canvas/SVG 绘图颜色取 CSS 令牌，跟随系统深浅色（分享卡例外：导出 PNG 固定浅色）
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim()
+// ponytail: 系统切主题不强制重画已渲染的 canvas/SVG，下次渲染自动取新色
+
 // 波形显示（录音中画电平，就绪后画静态摘要）
 const waveCtx = $('wave').getContext('2d')
 function drawWave() {
@@ -204,7 +208,7 @@ function drawWave() {
   const barW = 4, gap = 2
   const count = Math.floor(c.width / (barW + gap))
   const data = levelHistory.slice(-count)
-  waveCtx.fillStyle = '#6366f1'
+  waveCtx.fillStyle = cssVar('--primary')
   for (let i = 0; i < data.length; i++) {
     const h = Math.max(2, Math.min(1, data[i] * 4) * (c.height - 10))
     waveCtx.fillRect(i * (barW + gap), mid - h / 2, barW, h)
@@ -453,7 +457,7 @@ function renderSentenceTable(sents) {
     <thead><tr><th>时间</th><th>原文（红字上方为听到的读音）</th><th>你的朗读</th><th>结果</th></tr></thead>
     <tbody>${sents.map((s, i) => {
       const time = s.start != null
-        ? `<button class="time-link" data-seek="${s.start}">${fmtTime(s.start)}</button>` : '—'
+        ? `<button class="time-link" data-seek="${s.start}">${fmtTime(s.start)}</button>` : '-'
       const refCell = s.refText ? renderRefChars(s) : `<span class="missed-cell">（无，多读的句子）</span>`
       const hypCell = s.text
         ? esc(s.text)
@@ -515,6 +519,7 @@ function drawRadar(canvas, dims) {
   const angle = i => -Math.PI / 2 + (i * 2 * Math.PI) / n
   const pt = (i, r) => [cx + Math.cos(angle(i)) * r, cy + Math.sin(angle(i)) * r]
 
+  const C = { line: cssVar('--line'), ink: cssVar('--ink'), pri: cssVar('--primary'), pink: cssVar('--primary-ink'), fill: cssVar('--primary-fill') }
   ctx.lineWidth = 2
   for (let ring = 1; ring <= 4; ring++) {
     ctx.beginPath()
@@ -523,7 +528,7 @@ function drawRadar(canvas, dims) {
       i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
     }
     ctx.closePath()
-    ctx.strokeStyle = '#e5e7f0'
+    ctx.strokeStyle = C.line
     ctx.stroke()
   }
   // 轴线 + 标签
@@ -532,12 +537,12 @@ function drawRadar(canvas, dims) {
   ctx.textBaseline = 'middle'
   for (let i = 0; i < n; i++) {
     const [x, y] = pt(i, R)
-    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x, y); ctx.strokeStyle = '#e5e7f0'; ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x, y); ctx.strokeStyle = C.line; ctx.stroke()
     const [lx, ly] = pt(i, R + 46)
-    ctx.fillStyle = '#1f2333'
+    ctx.fillStyle = C.ink
     ctx.font = 'bold 24px "PingFang SC", "Microsoft YaHei", sans-serif'
     ctx.fillText(dims[i].name, lx, ly - 14)
-    ctx.fillStyle = '#6366f1'
+    ctx.fillStyle = C.pink
     ctx.font = 'bold 26px Consolas, monospace'
     ctx.fillText(dims[i].score, lx, ly + 16)
   }
@@ -548,14 +553,14 @@ function drawRadar(canvas, dims) {
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
   }
   ctx.closePath()
-  ctx.fillStyle = 'rgba(99, 102, 241, 0.3)'
+  ctx.fillStyle = C.fill
   ctx.fill()
-  ctx.strokeStyle = '#6366f1'
+  ctx.strokeStyle = C.pri
   ctx.lineWidth = 3
   ctx.stroke()
   for (let i = 0; i < n; i++) {
     const [x, y] = pt(i, (R * dims[i].score) / 100)
-    ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fillStyle = '#4f46e5'; ctx.fill()
+    ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fillStyle = C.pink; ctx.fill()
   }
 }
 
@@ -1140,7 +1145,7 @@ function bikeScene(char) {
 
 function standScene(char) {
   return `<svg class="lb-svg lb-svg-stand" viewBox="0 0 64 64" role="img" aria-label="原地站立">
-  <ellipse cx="32" cy="58" rx="13" ry="2.5" fill="#e5e7f0"/>
+  <ellipse cx="32" cy="58" rx="13" ry="2.5" fill="${cssVar('--soft')}"/>
   <g class="sc-body">
     ${limb(32, 25, 32, 44, char, 5)}
     ${limb(32, 30, 25, 38, char, 3.5)}
@@ -1156,7 +1161,7 @@ function standScene(char) {
 function walkScene(char) {
   return `<svg class="lb-svg lb-svg-back" viewBox="0 0 64 64" role="img" aria-label="倒退">
   ${speedLines()}
-  <ellipse cx="32" cy="58" rx="13" ry="2.5" fill="#e5e7f0"/>
+  <ellipse cx="32" cy="58" rx="13" ry="2.5" fill="${cssVar('--soft')}"/>
   <g class="sc-move">
     ${limb(32, 25, 32, 44, char, 5)}
     ${limb(32, 30, 25, 37, char, 3.5)}
@@ -1170,7 +1175,7 @@ function walkScene(char) {
 
 function seedScene() {
   return `<svg class="lb-svg lb-svg-seed" viewBox="0 0 64 64" role="img" aria-label="待观察">
-  <ellipse cx="32" cy="56" rx="14" ry="3" fill="#e5e7f0"/>
+  <ellipse cx="32" cy="56" rx="14" ry="3" fill="${cssVar('--soft')}"/>
   <g class="sprout">
     <path d="M32 56 V40" stroke="#16a34a" stroke-width="3" stroke-linecap="round" fill="none"/>
     <path d="M32 44 Q21 42 19 33 Q30 33 32 44 Z" fill="#4ade80" stroke="#16a34a" stroke-width="1.2"/>
@@ -1417,10 +1422,10 @@ async function renderGrowth() {
     const y = s => top + ((100 - s) / 100) * (bottom - top)
     const poly = pts.map((s, i) => `${x(i).toFixed(1)},${y(s).toFixed(1)}`).join(' ')
     const grid = [0, 50, 100].map(g => `
-      <line x1="${padL}" y1="${y(g)}" x2="${W - padR}" y2="${y(g)}" stroke="#e5e7f0" stroke-width="1"/>
-      <text x="${padL - 4}" y="${y(g) + 3}" font-size="9" fill="#9ca3af" text-anchor="end">${g}</text>`).join('')
+      <line x1="${padL}" y1="${y(g)}" x2="${W - padR}" y2="${y(g)}" stroke="${cssVar('--line')}" stroke-width="1"/>
+      <text x="${padL - 4}" y="${y(g) + 3}" font-size="9" fill="${cssVar('--muted')}" text-anchor="end">${g}</text>`).join('')
     const dots = recs.map((r, i) => `
-      <circle cx="${x(i).toFixed(1)}" cy="${y(r.totalScore).toFixed(1)}" r="3.2" fill="#4f46e5">
+      <circle cx="${x(i).toFixed(1)}" cy="${y(r.totalScore).toFixed(1)}" r="3.2" fill="${cssVar('--primary-ink')}">
         <title>${new Date(r.date).toLocaleDateString('zh-CN')} ${esc(r.modeLabel)}：${r.totalScore} 分</title>
       </circle>`).join('')
     const df = d => new Date(d).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
@@ -1428,11 +1433,11 @@ async function renderGrowth() {
       <div class="muted small" style="margin-bottom:2px">${recs.length} 次评测 · 平均 ${avg} 分 · 趋势：${tr.label}</div>
       <svg viewBox="0 0 ${W} ${H}" class="growth-svg">
         ${grid}
-        <line x1="${padL}" y1="${y(avg)}" x2="${W - padR}" y2="${y(avg)}" stroke="#10b981" stroke-width="1" stroke-dasharray="4 3"/>
-        <polyline points="${poly}" fill="none" stroke="#6366f1" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        <line x1="${padL}" y1="${y(avg)}" x2="${W - padR}" y2="${y(avg)}" stroke="${cssVar('--green')}" stroke-width="1" stroke-dasharray="4 3"/>
+        <polyline points="${poly}" fill="none" stroke="${cssVar('--primary')}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
         ${dots}
-        <text x="${padL}" y="${H - 3}" font-size="9" fill="#9ca3af">${df(recs[0].date)}</text>
-        <text x="${W - padR}" y="${H - 3}" font-size="9" fill="#9ca3af" text-anchor="end">${df(recs[recs.length - 1].date)}</text>
+        <text x="${padL}" y="${H - 3}" font-size="9" fill="${cssVar('--muted')}">${df(recs[0].date)}</text>
+        <text x="${W - padR}" y="${H - 3}" font-size="9" fill="${cssVar('--muted')}" text-anchor="end">${df(recs[recs.length - 1].date)}</text>
       </svg>`
   }
 
@@ -1515,6 +1520,7 @@ function shareReport(report) {
   cv.width = W; cv.height = H
   const ctx = cv.getContext('2d')
   const bg = ctx.createLinearGradient(0, 0, 0, H)
+  // ponytail: 分享卡是导出的 PNG，固定浅色配色，不跟随深色模式
   bg.addColorStop(0, '#eef2ff'); bg.addColorStop(1, '#ffffff')
   ctx.fillStyle = bg
   ctx.fillRect(0, 0, W, H)
