@@ -128,7 +128,16 @@
 - 战报卡（纯前端渲染）：胜者开车冲锋/败者倒退动画（复用排行榜场景 SVG）、总分 VS、逐维度拔河条（宽度按双方分值占比）、趣味战评（按分差档位+最大维度差确定性生成，不调 LLM）
 - 集成测试：`node test-pk.mjs`（19 项：鉴权/组隔离/胜负/平局/取消/重复应战）
 
-### 3.15 后续迭代（v2+，不在 MVP 内）
+### 3.15 英语朗读点评（v1.6 已实现）
+- 练习面板右上「中 / EN」语言切换（会话级，存前端变量）；`/api/transcribe` 与 `/api/analyze` 均带 `lang` 参数，英语时 ASR 请求附 OpenAI 兼容 `language=en` 提示
+- 英语朗读对齐：**句级**按英文标点（.!? 后接空白）分句、按单词 token 做相似度；**句内单词级** NW 对齐（`alignWords`），输出 words: [{w, status: ok|wrong|missed, hypW?}]；前端原文列逐词渲染（错词标红+上方听成的词、漏读词虚线）
+- 英语维度（MODES.readEn）：Accuracy / Fluency / Pace & Rhythm / Pronunciation / Intonation & Expression；Prompt 附加英语点评说明（词重音/句重音/连读/语调），证据引用英文原句
+- 语速指标：英语按词/分钟（120-180 为宜），中文维持字/分钟；口头禅词表补充 um/uh
+- 记录与云端：report/记录带 `lang` 字段（sanitizeRecord 白名单），历史列表英语记录显示 🌐；PK 维度拔河天然兼容英文维度名
+- 局限（ponytail）：单词级对齐无发音信息——分不清"真读错"与"ASR 听错"，词形变化（reads/read、jumps/jump）会判 wrong；精确发音评分需接专业评测 API（讯飞 ISE / 腾讯云 SOE / Azure Pronunciation assessment）
+- 测试：test-align.mjs 增补英语用例（错词/漏词/大小写不敏感/句级集成/漏句）
+
+### 3.16 后续迭代（v2+，不在 MVP 内）
 - 发音音素级评分（专业语音评测服务）
 - 跟读对比：原声示范 + 用户模仿打分
 - 练习目标与打卡

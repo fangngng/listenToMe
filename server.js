@@ -113,6 +113,12 @@ const MODES = {
     // ponytail: ASR 无说话人分离，话语归属靠 LLM 从内容推断；需精确分人时换支持 diarization 的 ASR
     extra: '本录音为两人的真实对话。转写不区分说话人，请根据上下文推断双方话语归属后再点评。重点评价互动质量：是否倾听并回应对方、接话是否自然、有无打断或冷场、整体氛围如何。优缺点证据可引用任意一方的话语。',
   },
+  readEn: {
+    label: '英语朗读',
+    dims: ['Accuracy', 'Fluency', 'Pace & Rhythm', 'Pronunciation', 'Intonation & Expression'],
+    desc: '对照英语参考文本朗读，检查错读/漏读/多读与单词发音准确度',
+    extra: '用户的录音为英语朗读，参考文本与转写均为英文。请按英语发音与语调习惯点评：单词重音、句子重音、连读、语调起伏、停顿位置。证据（evidence）必须引用英文原句。维度名必须使用给定的英文维度名。',
+  },
 }
 
 // =========================================================
@@ -140,14 +146,15 @@ app.post('/api/transcribe', rateLimit(30, 60 * 1000), (req, res, next) => {
     const durationSec = parseFloat(req.body?.duration) || 0
     const filename = req.file.originalname || 'audio.wav'
     const mime = req.file.mimetype || 'audio/wav'
+    const lang = req.body?.lang === 'en' ? 'en' : 'zh'
 
     let json
     try {
       // 优先要带时间戳的 verbose_json
-      json = await callAsr(req.file.buffer, filename, mime, 'verbose_json')
+      json = await callAsr(req.file.buffer, filename, mime, 'verbose_json', lang)
     } catch (e) {
       // 某些服务（如 SenseVoice）不支持 verbose_json，退回普通 json
-      json = await callAsr(req.file.buffer, filename, mime, 'json')
+      json = await callAsr(req.file.buffer, filename, mime, 'json', lang)
     }
 
     const result = normalizeAsr(json, durationSec)
@@ -161,11 +168,13 @@ app.post('/api/transcribe', rateLimit(30, 60 * 1000), (req, res, next) => {
   }
 })
 
-async function callAsr(buffer, filename, mime, format) {
+async function callAsr(buffer, filename, mime, format, lang) {
   const form = new FormData()
   form.append('file', new Blob([buffer], { type: mime }), filename)
   form.append('model', ASR_MODEL)
   if (format) form.append('response_format', format)
+  // OpenAI 兼容接口的语言提示；中文走自动检测（默认），英语显式声明提升识别率
+  if (lang === 'en') form.append('language', 'en')
 
   const r = await fetch(ASR_BASE_URL + '/audio/transcriptions', {
     method: 'POST',
@@ -223,13 +232,15 @@ app.post('/api/analyze', rateLimit(30, 60 * 1000), async (req, res) => {
     if (!LLM_API_KEY) return res.status(500).json({ error: '服务端未配置 DEEPSEEK_API_KEY，请在 .env 中填写' })
 
     let { mode = 'smart', refText = '', topic = '' } = req.body
+    const lang = req.body.lang === 'en' ? 'en' : 'zh'
     const transcript = req.body.transcript || {}
     const metrics = req.body.metrics || {}
     // 智能点评：按输入自动判定实际模式（参考文本→朗读对齐；主题→演讲；都无→泛用）
     if (mode === 'smart' || !MODES[mode]) {
       mode = refText.trim() ? 'read' : topic.trim() ? 'speech' : 'general'
     }
-    const modeCfg = MODES[mode]
+    // 英语朗读走独立维度与 Prompt 说明
+    const modeCfg = mode === 'read' && lang === 'en' ? MODES.readEn : MODES[mode]
 
     const text = String(transcript.text || '')
     const segments = Array.isArray(transcript.segments) ? transcript.segments : []
@@ -242,9 +253,9 @@ app.post('/api/analyze', rateLimit(30, 60 * 1000), async (req, res) => {
     let sentences
     let alignmentSummary = ''
     if (mode === 'read' && refText.trim()) {
-      const aligned = alignSentences(refText, segments)
+      const aligned = alignSentences(refText, segments, lang)
       sentences = aligned.sentences
-      alignmentSummary = buildAlignmentSummary(aligned)
+      alignmentSummary = buildAlignmentSummary(aligned, lang)
     } else {
       sentences = segments.map(s => ({
         text: s.text, start: s.start, end: s.end,
@@ -252,7 +263,7 @@ app.post('/api/analyze', rateLimit(30, 60 * 1000), async (req, res) => {
       }))
     }
 
-    const messages = buildPrompt(modeCfg, { text, segments, metrics, fillers, topic, alignmentSummary })
+    const messages = buildPrompt(modeCfg, { text, segments, metrics, fillers, topic, alignmentSummary, lang })
     let report = null
     let lastErr = null
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -281,6 +292,7 @@ app.post('/api/analyze', rateLimit(30, 60 * 1000), async (req, res) => {
         ...normalized,
         mode,
         modeLabel: modeCfg.label,
+        lang,
         metrics,
         fillers,
         sentences,
@@ -336,7 +348,7 @@ function extractJson(s) {
 }
 
 // ---------- Prompt ----------
-function buildPrompt(modeCfg, { segments, metrics, fillers, topic, alignmentSummary }) {
+function buildPrompt(modeCfg, { segments, metrics, fillers, topic, alignmentSummary, lang = 'zh' }) {
   const fmt = sec => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`
   const transcriptLines = segments
     .map((s, i) => `[${i + 1}] ${fmt(s.start)}~${fmt(s.end)} ${s.text}`)
@@ -348,9 +360,15 @@ function buildPrompt(modeCfg, { segments, metrics, fillers, topic, alignmentSumm
   if (metrics.speechSec) metricLines.push(`- 估计说话时长（去除长停顿）：${fmt(metrics.speechSec)}`)
   if (metrics.pauseCount != null) metricLines.push(`- ≥0.6秒的停顿次数：${metrics.pauseCount} 次，最长停顿 ${metrics.longestPauseSec || 0} 秒`)
   if (metrics.speechSec && segments.length) {
-    const chars = segments.reduce((a, s) => a + s.text.replace(/\s/g, '').length, 0)
-    const cpm = Math.round((chars / metrics.speechSec) * 60)
-    metricLines.push(`- 语速：约 ${cpm} 字/分钟（中文朗读一般 180-260 字/分钟为宜）`)
+    if (lang === 'en') {
+      const words = segments.reduce((a, s) => a + (String(s.text).match(/[A-Za-z0-9']+/g) || []).length, 0)
+      const wpm = Math.round((words / metrics.speechSec) * 60)
+      metricLines.push(`- 语速：约 ${wpm} 词/分钟（英语朗读一般 120-180 词/分钟为宜）`)
+    } else {
+      const chars = segments.reduce((a, s) => a + s.text.replace(/\s/g, '').length, 0)
+      const cpm = Math.round((chars / metrics.speechSec) * 60)
+      metricLines.push(`- 语速：约 ${cpm} 字/分钟（中文朗读一般 180-260 字/分钟为宜）`)
+    }
   }
   const fillerLine = fillers.length
     ? fillers.map(f => `"${f.word}"×${f.count}`).join('、')
@@ -458,6 +476,7 @@ function sanitizeRecord(r) {
     date: String(r.date || ''),
     mode: String(r.mode || 'general'),
     modeLabel: String(r.modeLabel || ''),
+    lang: String(r.lang || 'zh'),
     durationSec: Number(r.durationSec) || 0,
     totalScore: Number(r.totalScore) || 0,
     summary: String(r.summary || ''),
@@ -730,6 +749,7 @@ app.get('/api/pk/:id', (req, res) => {
 const FILLER_WORDS = [
   '嗯', '呃', '那个', '这个', '然后', '就是说', '怎么说', '对吧', '是不是',
   '其实', '那么', '反正', '等于说', 'basically', 'you know', 'i mean', 'like',
+  'um', 'uh',
 ]
 
 function escapeReg(s) {
@@ -752,23 +772,30 @@ function normText(s) {
   return String(s).replace(/[\s\p{P}\p{S}]+/gu, '').toLowerCase()
 }
 
-/** 按中英文句末标点分句 */
+/** 按中英文句末标点分句（英文按 .!? 后接空白处切分） */
 function splitSentences(text) {
   const parts = String(text)
-    .split(/(?<=[。！？!?；;\n])/)
+    .split(/(?<=[。！？；;\n!?])|(?<=\.)\s+/)
     .map(s => s.trim())
     .filter(Boolean)
-  // 过短的碎片并入前句
+  // 过短的碎片并入前句（中文按字数、英文按词数）
   const merged = []
   for (const p of parts) {
-    if (merged.length && normText(p).length < 4) merged[merged.length - 1] += p
+    const cjk = (p.match(/[一-鿿]/g) || []).length
+    const size = cjk || (p.match(/[A-Za-z0-9']+/g) || []).length
+    if (merged.length && size < (cjk ? 4 : 2)) merged[merged.length - 1] += p
     else merged.push(p)
   }
   return merged
 }
 
-/** 编辑距离相似度 0~1 */
+/** 编辑距离相似度 0~1（字符串版，兼容旧调用） */
 function similarity(a, b) {
+  return similaritySeq([...String(a)], [...String(b)])
+}
+
+/** 编辑距离相似度 0~1（token 数组版：中文按字、英语按词） */
+function similaritySeq(a, b) {
   const m = a.length, n = b.length
   if (!m && !n) return 1
   if (!m || !n) return 0
@@ -787,14 +814,19 @@ function similarity(a, b) {
   return 1 - prev[n] / Math.max(m, n)
 }
 
+/** 英语分词（小写单词/数字 token） */
+const tokenizeEn = s => String(s).toLowerCase().match(/[a-z0-9']+/g) || []
+
 /**
  * 朗读模式：参考文本句 与 转写句 做全局对齐（类 Needleman-Wunsch）。
- * 返回 sentences: [{text, start, end, refText, status}]
+ * 返回 sentences: [{text, start, end, refText, status, chars?|words?}]
  * status: correct | wrong | missed(漏读) | extra(多读)
+ * lang=en 时句内按单词对齐（words），中文按逐字拼音对齐（chars）
  */
-function alignSentences(refText, hypSegments) {
-  const refs = splitSentences(refText).map(s => ({ raw: s, norm: normText(s) })).filter(r => r.norm)
-  const hyps = hypSegments.map(s => ({ ...s, norm: normText(s.text) })).filter(h => h.norm)
+function alignSentences(refText, hypSegments, lang = 'zh') {
+  const normOf = s => lang === 'en' ? tokenizeEn(s) : [...normText(s)]
+  const refs = splitSentences(refText).map(s => ({ raw: s, norm: normOf(s) })).filter(r => r.norm.length)
+  const hyps = hypSegments.map(s => ({ ...s, norm: normOf(s.text) })).filter(h => h.norm.length)
 
   const M = refs.length, N = hyps.length
   const GAP = 1, MATCH_COST = 2
@@ -836,17 +868,67 @@ function alignSentences(refText, hypSegments) {
 
   const sentences = pairs.map(({ ref, hyp, sim }) => {
     if (ref && hyp) {
-      const chars = alignChars(ref.raw, hyp.text)
+      const intra = lang === 'en' ? { words: alignWords(ref.raw, hyp.text) } : { chars: alignChars(ref.raw, hyp.text) }
+      const wrongKey = lang === 'en' ? 'words' : 'chars'
       return {
         text: hyp.text, start: hyp.start, end: hyp.end,
-        refText: ref.raw, chars,
-        status: sim >= 0.95 && !chars.some(c => c.status === 'wrong') ? 'correct' : 'wrong',
+        refText: ref.raw, ...intra,
+        status: sim >= 0.95 && !intra[wrongKey].some(c => c.status === 'wrong') ? 'correct' : 'wrong',
       }
     }
     if (ref) return { text: '', start: null, end: null, refText: ref.raw, status: 'missed' }
     return { text: hyp.text, start: hyp.start, end: hyp.end, refText: null, status: 'extra' }
   })
   return { sentences }
+}
+
+/**
+ * 英语朗读：参考句 vs 转写句 的单词级对齐（NW，词粒度）。
+ * 返回 words（按参考文本单词顺序）: [{w, status, hypW?}]
+ * status: ok | wrong（读成别的词）| missed（该词未读到）
+ * ponytail: 无发音级信息——分不清"真读错"与"ASR 听错"；词形变化（reads/read）也会判 wrong，需发音评测时接专业 API
+ */
+function alignWords(refRaw, hypRaw) {
+  const refs = tokenizeEn(refRaw)
+  const hyps = tokenizeEn(hypRaw)
+  const M = refs.length, N = hyps.length
+  const cost = (a, b) => (a === b ? 0 : 2)
+  const GAP = 1.2
+  const dp = Array.from({ length: M + 1 }, () => new Array(N + 1).fill(Infinity))
+  dp[0][0] = 0
+  for (let i = 0; i <= M; i++) {
+    for (let j = 0; j <= N; j++) {
+      if (!i && !j) continue
+      let best = Infinity
+      if (i) best = Math.min(best, dp[i - 1][j] + GAP)
+      if (j) best = Math.min(best, dp[i][j - 1] + GAP)
+      if (i && j) best = Math.min(best, dp[i - 1][j - 1] + cost(refs[i - 1], hyps[j - 1]))
+      dp[i][j] = best
+    }
+  }
+
+  // 回溯（平局时优先 gap：漏读/多读优先判「漏+多」，与中文一致）
+  const pairs = []
+  let i = M, j = N
+  while (i > 0 || j > 0) {
+    if (i && Math.abs(dp[i][j] - (dp[i - 1][j] + GAP)) < 1e-9) {
+      pairs.push([refs[i - 1], null]); i--; continue
+    }
+    if (j && Math.abs(dp[i][j] - (dp[i][j - 1] + GAP)) < 1e-9) {
+      pairs.push([null, hyps[j - 1]]); j--; continue
+    }
+    pairs.push([refs[i - 1], hyps[j - 1]]); i--; j--
+  }
+  pairs.reverse()
+
+  const words = []
+  for (const [r, h] of pairs) {
+    if (!r) continue  // 多读的转写词不进 words（原文列只标参考侧）
+    if (!h) { words.push({ w: r, status: 'missed' }); continue }
+    if (r === h) { words.push({ w: r, status: 'ok' }); continue }
+    words.push({ w: r, status: 'wrong', hypW: h })
+  }
+  return words
 }
 
 /**
@@ -908,21 +990,33 @@ function alignChars(refRaw, hypRaw) {
   return chars
 }
 
-function buildAlignmentSummary({ sentences }) {
+function buildAlignmentSummary({ sentences }, lang = 'zh') {
   const missed = sentences.filter(s => s.status === 'missed')
   const wrong = sentences.filter(s => s.status === 'wrong')
   const extra = sentences.filter(s => s.status === 'extra')
   const correct = sentences.filter(s => s.status === 'correct')
   const total = sentences.filter(s => s.status !== 'extra').length || 1
   const lines = [
-    `- 读对：${correct.length}/${total} 句；读错（含明显增删字）：${wrong.length} 句；漏读：${missed.length} 句；多读：${extra.length} 句`,
+    `- 读对：${correct.length}/${total} 句；读错（含明显增删词）：${wrong.length} 句；漏读：${missed.length} 句；多读：${extra.length} 句`,
   ]
-  const wrongChars = sentences.flatMap(s => (s.chars || []).filter(c => c.status === 'wrong'))
-  if (wrongChars.length) {
-    const byPart = { 声母: 0, 韵母: 0, 声调: 0 }
-    for (const c of wrongChars) for (const p of ['声母', '韵母', '声调']) if (c.wrongPart.includes(p)) byPart[p]++
-    lines.push(`- 疑似错音 ${wrongChars.length} 处（声母 ${byPart.声母} / 韵母 ${byPart.韵母} / 声调 ${byPart.声调}），转写为准仅供参考：`)
-    wrongChars.slice(0, 10).forEach(c => lines.push(`  · "${c.ch}"(${c.py}) 听成 "${c.hypCh}"(${c.hypPy})，${c.wrongPart}错`))
+  if (lang === 'en') {
+    const wrongWords = sentences.flatMap(s => (s.words || []).filter(c => c.status === 'wrong'))
+    const missedWords = sentences.flatMap(s => (s.words || []).filter(c => c.status === 'missed'))
+    if (wrongWords.length) {
+      lines.push(`- 疑似读错单词 ${wrongWords.length} 处（以转写为准，仅供参考）：`)
+      wrongWords.slice(0, 10).forEach(c => lines.push(`  · "${c.w}" 听成 "${c.hypW}"`))
+    }
+    if (missedWords.length) {
+      lines.push(`- 漏读单词 ${missedWords.length} 个：${missedWords.slice(0, 10).map(c => `"${c.w}"`).join('、')}`)
+    }
+  } else {
+    const wrongChars = sentences.flatMap(s => (s.chars || []).filter(c => c.status === 'wrong'))
+    if (wrongChars.length) {
+      const byPart = { 声母: 0, 韵母: 0, 声调: 0 }
+      for (const c of wrongChars) for (const p of ['声母', '韵母', '声调']) if (c.wrongPart.includes(p)) byPart[p]++
+      lines.push(`- 疑似错音 ${wrongChars.length} 处（声母 ${byPart.声母} / 韵母 ${byPart.韵母} / 声调 ${byPart.声调}），转写为准仅供参考：`)
+      wrongChars.slice(0, 10).forEach(c => lines.push(`  · "${c.ch}"(${c.py}) 听成 "${c.hypCh}"(${c.hypPy})，${c.wrongPart}错`))
+    }
   }
   if (wrong.length) {
     lines.push('- 读错的句子（原文 -> 实际朗读）：')
@@ -940,7 +1034,7 @@ function buildAlignmentSummary({ sentences }) {
 }
 
 // =========================================================
-export { alignSentences, alignChars, splitSentences, countFillers, similarity, normalizeAsr }
+export { alignSentences, alignChars, alignWords, splitSentences, countFillers, similarity, similaritySeq, normalizeAsr }
 
 if (!process.env.NO_LISTEN) {
   app.listen(PORT, () => {

@@ -21,6 +21,7 @@ const ACTIVE_KEY = 'listentome:activeAccount'
 const GROUP_KEY = 'listentome:group'  // 账号组：设备级，云端只展示同组账号
 
 let mode = 'smart'
+let lang = 'zh'  // 朗读语言：zh 逐字拼音对照 / en 单词级对照
 let audioBlob = null
 let audioURL = null
 let metrics = null
@@ -50,6 +51,12 @@ function setMode(m) {
 }
 modeTabs.forEach(t => t.addEventListener('click', () => setMode(t.dataset.mode)))
 setMode('smart')
+
+const langBtns = document.querySelectorAll('.lang-btn')
+langBtns.forEach(b => b.addEventListener('click', () => {
+  lang = b.dataset.lang
+  langBtns.forEach(x => x.classList.toggle('active', x === b))
+}))
 
 $('refText').addEventListener('input', e => {
   const n = e.target.value.replace(/\s/g, '').length
@@ -292,6 +299,7 @@ async function analyze() {
     const fd = new FormData()
     fd.append('audio', audioBlob, audioBlob.name || 'audio.wav')
     fd.append('duration', metrics?.durationSec || 0)
+    fd.append('lang', lang)
 
     const r1 = await fetch('api/transcribe', { method: 'POST', body: fd })
     const transcript = await r1.json()
@@ -305,6 +313,7 @@ async function analyze() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         mode,
+        lang,
         refText: $('refText').value,
         topic: $('topicInput').value,
         transcript,
@@ -453,7 +462,7 @@ function renderSentenceTable(sents) {
     <tbody>${sents.map((s, i) => {
       const time = s.start != null
         ? `<button class="time-link" data-seek="${s.start}">${fmtTime(s.start)}</button>` : '-'
-      const refCell = s.refText ? renderRefChars(s) : `<span class="missed-cell">（无，多读的句子）</span>`
+      const refCell = s.refText ? (s.words ? renderRefWords(s) : renderRefChars(s)) : `<span class="missed-cell">（无，多读的句子）</span>`
       const hypCell = s.text
         ? esc(s.text)
         : `<span class="missed-cell">（漏读）</span>`
@@ -475,6 +484,19 @@ function renderRefChars(s) {
     if (c.status === 'ok') return esc(ch)
     if (c.status === 'missed') return `<span class="pchar missed" title="未读到">${esc(ch)}</span>`
     return `<span class="pchar wrong" data-hyp="${esc(c.hypPy)}" title="听成「${esc(c.hypCh)}」${esc(c.hypPy)}，${esc(c.wrongPart)}错">${esc(ch)}</span>`
+  }).join('')
+}
+
+// 英语原文逐词渲染：读错的词标红并在上方标出听到的词，漏读的词虚线下划
+function renderRefWords(s) {
+  if (!s.words?.length) return esc(s.refText)
+  let k = 0
+  return String(s.refText).split(/([A-Za-z0-9']+)/).map(tok => {
+    if (!/^[A-Za-z0-9']+$/.test(tok)) return esc(tok)
+    const c = s.words[k++] || { status: 'ok' }
+    if (c.status === 'ok') return esc(tok)
+    if (c.status === 'missed') return `<span class="pchar missed" title="未读到">${esc(tok)}</span>`
+    return `<span class="pchar wrong" data-hyp="${esc(c.hypW)}" title="听成「${esc(c.hypW)}」">${esc(tok)}</span>`
   }).join('')
 }
 
@@ -1289,6 +1311,7 @@ async function saveHistory(report) {
       date: new Date().toISOString(),
       mode: report.mode,
       modeLabel: report.modeLabel,
+      lang: report.lang || 'zh',
       durationSec: report.metrics?.durationSec || 0,
       totalScore: report.totalScore,
       summary: report.summary,
@@ -1344,7 +1367,7 @@ async function renderHistory() {
     list.innerHTML = all.map(r => `
       <div class="history-item" data-id="${r.id}">
         <div class="history-main">
-          <div class="history-meta">${r.modeLabel} · ${new Date(r.date).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${fmtTime(r.durationSec)}</div>
+          <div class="history-meta">${r.lang === 'en' ? '🌐 ' : ''}${r.modeLabel} · ${new Date(r.date).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${fmtTime(r.durationSec)}</div>
           <div class="history-summary">${esc(r.summary)}</div>
         </div>
         <span class="history-score">${r.totalScore}</span>
