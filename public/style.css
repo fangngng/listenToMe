@@ -817,3 +817,69 @@ footer { text-align: center; padding: 10px; }
 .group-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .group-row input { flex: 1; min-width: 0; }
 #groupLabel.in-group { color: var(--primary-ink); font-weight: 600; }
+
+/* ---------- 云端 PK 竞技场 ---------- */
+.pk-entry-btn { margin-left: 8px; vertical-align: middle; }
+.pk-box { width: min(560px, 100%); }
+.pk-create {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 12px 0;
+  background: var(--tint-2);
+}
+.pk-create-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.pk-create-row label { flex-shrink: 0; font-size: 13px; color: var(--ink-2); width: 84px; }
+.pk-create-row select { flex: 1; min-width: 0; }
+.pk-create .wide-btn { margin-top: 4px; }
+
+.pk-item {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; margin-bottom: 8px; background: var(--raise);
+}
+.pk-open-info { flex: 1; min-width: 0; }
+.pk-open-title { font-size: 14px; font-weight: 600; }
+.pk-accept-box { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pk-accept-box select { flex: 1; min-width: 130px; }
+
+/* 对战结算卡 */
+.pk-battle {
+  border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px; margin-bottom: 12px; background: var(--raise);
+}
+.pk-versus { display: flex; align-items: center; gap: 8px; }
+.pk-fighter { flex: 1; text-align: center; min-width: 0; }
+.pk-anim { width: 72px; height: 72px; margin: 0 auto; }
+.pk-anim svg { width: 100%; height: 100%; display: block; }
+.pk-f-name { font-size: 14px; font-weight: 700; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pk-f-score { font-size: 28px; font-weight: 800; color: var(--primary-ink); line-height: 1.1; }
+.pk-vs { flex-shrink: 0; font-size: 18px; font-weight: 900; color: var(--muted); font-style: italic; }
+.pk-winner .pk-f-score { color: var(--gold-ring); }
+.pk-winner .pk-anim { animation: pkWinPop 0.9s var(--ease) both; }
+.pk-loser { opacity: 0.72; }
+@keyframes pkWinPop {
+  0% { transform: scale(0.4); }
+  60% { transform: scale(1.18); }
+  100% { transform: scale(1); }
+}
+
+/* 逐维度拔河条：左=挑战者，右=应战者，中缝随分差移动 */
+.pk-dims { margin-top: 12px; display: grid; gap: 8px; }
+.pk-dim { display: grid; grid-template-columns: 30px 1fr 30px; grid-template-rows: auto auto; align-items: center; gap: 2px 8px; }
+.pk-dim-score { font-size: 12px; font-weight: 700; color: var(--muted); text-align: center; }
+.pk-dim-score.pk-dim-win { color: var(--primary-ink); }
+.pk-dim-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--soft); }
+.pk-dim-a, .pk-dim-b { height: 100%; transition: width 0.6s var(--ease); }
+.pk-dim-a { background: var(--primary-soft); }
+.pk-dim-b { background: var(--soft); border-left: 2px solid var(--card); }
+.pk-dim-a.pk-dim-win { background: var(--primary-strong); }
+.pk-dim-b.pk-dim-win { background: var(--gold-ring); }
+.pk-dim-name { grid-column: 1 / -1; font-size: 11px; color: var(--muted); text-align: center; }
+
+.pk-comment {
+  margin: 12px 0 0; padding: 10px 12px;
+  border-radius: 10px; font-size: 13px; line-height: 1.6;
+  background: var(--gold-bg); border: 1px solid var(--gold-line); color: var(--ink);
+}
+.pk-time { margin: 8px 0 0; text-align: right; }

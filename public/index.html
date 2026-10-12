@@ -20,7 +20,9 @@
 
 <div class="banner">
   <section class="card leaderboard-card">
-    <h2>🏆 趣味排行榜 <span class="muted small">按平均分排名，兔子领跑、乌龟垫底，右侧是最近趋势</span></h2>
+    <h2>🏆 趣味排行榜 <span class="muted small">按平均分排名，兔子领跑、乌龟垫底，右侧是最近趋势</span>
+      <button id="pkBtn" class="btn ghost small-btn pk-entry-btn" title="云端跨设备对战">⚔️ 云端PK</button>
+    </h2>
     <div id="leaderboard"></div>
   </section>
 </div>
@@ -51,20 +53,18 @@
   <!-- 练习面板 -->
   <section class="card" id="practiceCard">
     <div class="mode-tabs">
-      <button class="mode-tab active" data-mode="read">📖 朗读练习</button>
-      <button class="mode-tab" data-mode="speech">🎤 演讲练习</button>
-      <button class="mode-tab" data-mode="general">💬 泛用点评</button>
+      <button class="mode-tab active" data-mode="smart">🧠 智能点评</button>
       <button class="mode-tab" data-mode="dialog">🗣 对话互动</button>
     </div>
     <p class="mode-desc" id="modeDesc"></p>
 
     <div id="refWrap" class="field">
-      <label>参考文本（粘贴要朗读的内容）<span id="refCount" class="muted">0 字</span></label>
+      <label>参考文本（可选，填写后逐字对照纠错）<span id="refCount" class="muted">0 字</span></label>
       <textarea id="refText" rows="5" placeholder="粘贴课文、诗文或任意需要朗读的文本…"></textarea>
     </div>
 
-    <div id="topicWrap" class="field hidden">
-      <label>演讲主题 / 提纲（可选）</label>
+    <div id="topicWrap" class="field">
+      <label>演讲主题 / 提纲（可选，只填主题按演讲维度点评）</label>
       <input id="topicInput" type="text" placeholder="例如：产品季度汇报的开场部分">
     </div>
 
@@ -138,6 +138,30 @@
     </div>
     <div id="mergeList"></div>
     <button id="mergeConfirmBtn" class="btn primary wide-btn" style="margin-top:8px">合并</button>
+  </div>
+</div>
+
+<!-- 云端 PK 弹层 -->
+<div id="pkDialog" class="modal hidden">
+  <div class="card modal-box pk-box">
+    <div class="report-header">
+      <h2>⚔️ 云端 PK 竞技场</h2>
+      <button id="pkCloseBtn" class="icon-btn" title="关闭">✕</button>
+    </div>
+    <p class="muted small">用一条已同步云端的评测记录发起挑战，同组账号在任意设备应战；应战后总分高者胜，逐维度拔河见分晓。</p>
+    <div id="pkCreate" class="pk-create">
+      <div class="pk-create-row">
+        <label>我的出战账号</label>
+        <select id="pkAccount"></select>
+      </div>
+      <div class="pk-create-row">
+        <label>出战记录</label>
+        <select id="pkRecord"></select>
+      </div>
+      <button id="pkChallengeBtn" class="btn primary wide-btn">⚔️ 发起挑战</button>
+    </div>
+    <div id="pkHint" class="muted small hidden"></div>
+    <div id="pkList"></div>
   </div>
 </div>
 

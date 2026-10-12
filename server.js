@@ -222,10 +222,14 @@ app.post('/api/analyze', rateLimit(30, 60 * 1000), async (req, res) => {
   try {
     if (!LLM_API_KEY) return res.status(500).json({ error: '服务端未配置 DEEPSEEK_API_KEY，请在 .env 中填写' })
 
-    const { mode = 'general', refText = '', topic = '' } = req.body
+    let { mode = 'smart', refText = '', topic = '' } = req.body
     const transcript = req.body.transcript || {}
     const metrics = req.body.metrics || {}
-    const modeCfg = MODES[mode] || MODES.general
+    // 智能点评：按输入自动判定实际模式（参考文本→朗读对齐；主题→演讲；都无→泛用）
+    if (mode === 'smart' || !MODES[mode]) {
+      mode = refText.trim() ? 'read' : topic.trim() ? 'speech' : 'general'
+    }
+    const modeCfg = MODES[mode]
 
     const text = String(transcript.text || '')
     const segments = Array.isArray(transcript.segments) ? transcript.segments : []
@@ -575,6 +579,149 @@ app.delete('/api/accounts/:id', (req, res) => {
   const file = accountFile(req.params.id)
   if (fs.existsSync(file)) fs.unlinkSync(file)
   res.json({ ok: true })
+})
+
+// =========================================================
+// 云端 PK（data/pk/<id>.json；同组账号间用已同步的评测记录对战，总分高者胜）
+// =========================================================
+const PK_DIR = path.join(path.dirname(DATA_DIR), 'pk')
+fs.mkdirSync(PK_DIR, { recursive: true })
+
+const validPkId = id => /^[A-Za-z0-9_-]{8,32}$/.test(String(id))
+const pkFile = id => path.join(PK_DIR, `${id}.json`)
+
+function readPk(id) {
+  try {
+    return JSON.parse(fs.readFileSync(pkFile(id), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function writePk(pk) {
+  fs.writeFileSync(pkFile(pk.id) + '.tmp', JSON.stringify(pk, null, 2), 'utf8')
+  fs.renameSync(pkFile(pk.id) + '.tmp', pkFile(pk.id))
+}
+
+/** 从云端账号记录里取对战快照（分数、维度、总评） */
+function pkSnapshot(account, recordId) {
+  const rec = account.records.find(r => String(r.id) === String(recordId))
+  if (!rec || !rec.report) return null
+  return {
+    accountId: String(account.id),
+    accountName: account.name,
+    recordId: Number(rec.id),
+    date: rec.date,
+    modeLabel: rec.modeLabel || '',
+    totalScore: Number(rec.totalScore) || 0,
+    summary: String(rec.summary || '').slice(0, 100),
+    dims: (Array.isArray(rec.report.dimensions) ? rec.report.dimensions : [])
+      .slice(0, 8)
+      .map(d => ({ name: String(d.name || ''), score: Math.max(0, Math.min(100, Number(d.score) || 0)) })),
+  }
+}
+
+function judgePk(pk) {
+  const a = pk.challenger.totalScore
+  const b = pk.opponent.totalScore
+  pk.winner = a > b ? 'challenger' : b > a ? 'opponent' : 'draw'
+}
+
+app.post('/api/pk', rateLimit(60, 60 * 1000), (req, res) => {
+  try {
+    const { accountId, recordId } = req.body || {}
+    if (!validCloudId(accountId)) return res.status(400).json({ error: '非法账号 id' })
+    const auth = checkAccountAuth(req, String(accountId))
+    if (!auth.ok) return res.status(auth.status).json({ error: auth.error })
+    if (!auth.existing) return res.status(404).json({ error: '请先把账号上传到云端再发起 PK' })
+    const snap = pkSnapshot(auth.existing, recordId)
+    if (!snap) return res.status(404).json({ error: '云端账号中没有这条评测记录，请先同步后再发起' })
+    const pk = {
+      id: crypto.randomBytes(9).toString('base64url'),  // 12 字符
+      group: auth.existing.group || '',
+      createdAt: Date.now(),
+      status: 'open',
+      challenger: snap,
+      opponent: null,
+      winner: null,
+      finishedAt: null,
+    }
+    writePk(pk)
+    res.json({ ok: true, pk })
+  } catch (err) {
+    console.error('[pk:create]', err)
+    res.status(500).json({ error: '发起 PK 失败：' + err.message })
+  }
+})
+
+app.get('/api/pks', (req, res) => {
+  const group = String(req.query.group || '')
+  const cutoff = Date.now() - 30 * 24 * 3600 * 1000  // 已结束的对局保留 30 天
+  const list = []
+  for (const f of fs.readdirSync(PK_DIR)) {
+    if (!f.endsWith('.json')) continue
+    const pk = readPk(f.slice(0, -5))
+    if (!pk || pk.group !== group) continue
+    if (pk.status === 'done' && (pk.finishedAt || 0) < cutoff) {
+      fs.unlinkSync(pkFile(pk.id))  // 顺手清理过期对局
+      continue
+    }
+    list.push(pk)
+  }
+  list.sort((a, b) => (a.status === b.status ? b.createdAt - a.createdAt : a.status === 'open' ? -1 : 1))
+  res.json({ pks: list.slice(0, 50) })
+})
+
+app.post('/api/pk/:id/accept', rateLimit(60, 60 * 1000), (req, res) => {
+  try {
+    if (!validPkId(req.params.id)) return res.status(400).json({ error: '非法对局 id' })
+    const pk = readPk(req.params.id)
+    if (!pk) return res.status(404).json({ error: '对局不存在' })
+    if (pk.status !== 'open') return res.status(409).json({ error: '该对局已结束或已取消' })
+    const { accountId, recordId } = req.body || {}
+    if (!validCloudId(accountId)) return res.status(400).json({ error: '非法账号 id' })
+    if (String(accountId) === pk.challenger.accountId) return res.status(400).json({ error: '不能应战自己发起的 PK' })
+    const auth = checkAccountAuth(req, String(accountId))
+    if (!auth.ok) return res.status(auth.status).json({ error: auth.error })
+    if (!auth.existing) return res.status(404).json({ error: '请先把账号上传到云端再应战' })
+    if ((auth.existing.group || '') !== pk.group) return res.status(403).json({ error: '只能应战同组账号的 PK' })
+    const snap = pkSnapshot(auth.existing, recordId)
+    if (!snap) return res.status(404).json({ error: '云端账号中没有这条评测记录，请先同步后再应战' })
+    pk.opponent = snap
+    pk.status = 'done'
+    pk.finishedAt = Date.now()
+    judgePk(pk)
+    writePk(pk)
+    res.json({ ok: true, pk })
+  } catch (err) {
+    console.error('[pk:accept]', err)
+    res.status(500).json({ error: '应战失败：' + err.message })
+  }
+})
+
+app.post('/api/pk/:id/cancel', rateLimit(60, 60 * 1000), (req, res) => {
+  try {
+    if (!validPkId(req.params.id)) return res.status(400).json({ error: '非法对局 id' })
+    const pk = readPk(req.params.id)
+    if (!pk) return res.status(404).json({ error: '对局不存在' })
+    if (pk.status !== 'open') return res.status(409).json({ error: '只有待战的对局可以取消' })
+    const { accountId } = req.body || {}
+    const auth = checkAccountAuth(req, String(accountId))
+    if (!auth.ok) return res.status(auth.status).json({ error: auth.error })
+    if (String(accountId) !== pk.challenger.accountId) return res.status(403).json({ error: '只有发起人可以取消' })
+    fs.unlinkSync(pkFile(pk.id))
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[pk:cancel]', err)
+    res.status(500).json({ error: '取消失败：' + err.message })
+  }
+})
+
+app.get('/api/pk/:id', (req, res) => {
+  if (!validPkId(req.params.id)) return res.status(400).json({ error: '非法对局 id' })
+  const pk = readPk(req.params.id)
+  if (!pk) return res.status(404).json({ error: '对局不存在' })
+  res.json({ pk })
 })
 
 // =========================================================

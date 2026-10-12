@@ -3,9 +3,7 @@
 const $ = id => document.getElementById(id)
 
 const MODES = {
-  read: { label: '朗读练习', desc: '对照参考文本朗读，检查错读/漏读/多读、准确度与流利度' },
-  speech: { label: '演讲练习', desc: '自由演讲或脱稿发言，分析结构逻辑、口头禅、语速与感染力' },
-  general: { label: '泛用点评', desc: '不依赖文本的综合点评：表达清晰度、语言习惯、亮点与短板' },
+  smart: { label: '智能点评', desc: '粘贴参考文本 → 逐字对照纠错；只填主题 → 演讲维度点评；都不填 → 综合点评' },
   dialog: { label: '对话互动', desc: '两人真实对话录音，点评倾听回应、互动节奏与氛围（AI 按内容推断说话人）' },
 }
 const STATUS_TEXT = {
@@ -22,7 +20,7 @@ const DB_NAME = 'listenToMe', STORE = 'records', ACCOUNTS = 'accounts'
 const ACTIVE_KEY = 'listentome:activeAccount'
 const GROUP_KEY = 'listentome:group'  // 账号组：设备级，云端只展示同组账号
 
-let mode = 'read'
+let mode = 'smart'
 let audioBlob = null
 let audioURL = null
 let metrics = null
@@ -46,11 +44,12 @@ function setMode(m) {
   mode = m
   modeTabs.forEach(t => t.classList.toggle('active', t.dataset.mode === m))
   $('modeDesc').textContent = MODES[m].desc
-  $('refWrap').classList.toggle('hidden', m !== 'read')
-  $('topicWrap').classList.toggle('hidden', m !== 'speech')
+  // 对话模式不需要参考文本/主题；智能点评两者皆可选
+  $('refWrap').classList.toggle('hidden', m === 'dialog')
+  $('topicWrap').classList.toggle('hidden', m === 'dialog')
 }
 modeTabs.forEach(t => t.addEventListener('click', () => setMode(t.dataset.mode)))
-setMode('read')
+setMode('smart')
 
 $('refText').addEventListener('input', e => {
   const n = e.target.value.replace(/\s/g, '').length
@@ -281,10 +280,6 @@ async function analyze() {
   if (!audioBlob) return
   if (!activeAccountId) {
     showError('请先在左侧创建账号，评测会保存到当前账号下')
-    return
-  }
-  if (mode === 'read' && !$('refText').value.trim()) {
-    showError('朗读模式需要先粘贴参考文本，或切换到演讲/泛用模式')
     return
   }
   const analyzeBtn = $('analyzeBtn')
@@ -1591,6 +1586,259 @@ function shareReport(report) {
     }
   }, 'image/png')
 }
+
+// =========================================================
+// 云端 PK 竞技场（跨设备对战：发起 -> 同组应战 -> 总分定胜负）
+// =========================================================
+let pks = []
+
+const pkHeaders = id => {
+  const h = { 'Content-Type': 'application/json' }
+  const s = getSecret(id)
+  if (s) h['X-Account-Secret'] = s
+  return h
+}
+
+/** 我已关联云端的账号 */
+const myLinkedAccounts = () => accounts.filter(a => isLinked(a.id))
+
+/** 某账号的记录选项（新到旧，最多 50 条） */
+async function recordOptions(accountId) {
+  const recs = (await idbOp(STORE, s => s.getAll()))
+    .filter(r => String(r.accountId) === String(accountId) && typeof r.totalScore === 'number')
+    .sort((a, b) => b.id - a.id)
+    .slice(0, 50)
+  return recs.map(r => {
+    const d = new Date(r.date).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    return `<option value="${r.id}">${d} · ${esc(r.modeLabel || '')} · ${r.totalScore} 分</option>`
+  }).join('')
+}
+
+async function renderPkCreate() {
+  const linked = myLinkedAccounts()
+  const hint = $('pkHint')
+  const create = $('pkCreate')
+  if (!linked.length) {
+    create.classList.add('hidden')
+    hint.textContent = '还没有关联云端的账号。先在左侧账号列表点「⬆️」上传到云端，才能发起或应战 PK。'
+    hint.classList.remove('hidden')
+    return
+  }
+  create.classList.remove('hidden')
+  hint.classList.add('hidden')
+  const sel = $('pkAccount')
+  const prev = sel.value
+  sel.innerHTML = linked.map(a => `<option value="${esc(String(a.id))}">${esc(a.name)}</option>`).join('')
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev
+  await fillPkRecords()
+}
+
+async function fillPkRecords() {
+  const accId = $('pkAccount').value
+  const opts = accId ? await recordOptions(accId) : ''
+  $('pkRecord').innerHTML = opts || '<option value="">（该账号还没有评测记录）</option>'
+}
+
+$('pkAccount').addEventListener('change', fillPkRecords)
+
+async function loadPks() {
+  try {
+    const r = await fetch('api/pks?group=' + encodeURIComponent(myGroup))
+    pks = r.ok ? (await r.json()).pks || [] : []
+  } catch {
+    pks = []
+  }
+}
+
+function renderPkList() {
+  const wrap = $('pkList')
+  if (!pks.length) {
+    wrap.innerHTML = '<p class="muted small">当前组还没有对局。发起一场挑战，等其他设备的账号来应战吧！</p>'
+    return
+  }
+  const mine = new Set(myLinkedAccounts().map(a => String(a.id)))
+  const open = pks.filter(p => p.status === 'open')
+  const done = pks.filter(p => p.status === 'done')
+  const openHtml = open.map(pk => {
+    const isMine = mine.has(pk.challenger.accountId)
+    const c = pk.challenger
+    return `
+    <div class="pk-item pk-open">
+      <div class="pk-open-info">
+        <div class="pk-open-title">${isMine ? '🚩 我发起的挑战' : `⚔️ <b>${esc(c.accountName)}</b> 向你挑战`}</div>
+        <div class="muted small">${esc(c.modeLabel || '')} · ${c.totalScore} 分 · ${new Date(pk.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit' })}</div>
+      </div>
+      ${isMine
+        ? `<button class="icon-btn danger" data-pk-cancel="${pk.id}" title="取消挑战">✕</button>`
+        : `<button class="btn ghost small-btn" data-pk-accept="${pk.id}" ${mine.size ? '' : 'disabled title="先在上方选择出战账号"'}>应战</button>`}
+    </div>`
+  }).join('')
+  wrap.innerHTML =
+    (open.length ? `<div class="section-title">🔥 待战</div>${openHtml}` : '') +
+    (done.length ? `<div class="section-title">📜 战报</div>${done.map(renderPkBattle).join('')}` : '')
+}
+
+/** 战评：按分差与最大维度差生成（确定性文案，不调 LLM） */
+function pkComment(pk) {
+  const w = pk.winner
+  const win = w === 'challenger' ? pk.challenger : pk.opponent
+  const lose = w === 'challenger' ? pk.opponent : pk.challenger
+  if (w === 'draw') return `🤝 ${pk.challenger.totalScore} : ${pk.opponent.totalScore}，势均力敌、棋逢对手，再战一场分高下！`
+  const diff = win.totalScore - lose.totalScore
+  const tier = diff >= 15 ? '👑 碾压局！' : diff >= 8 ? '🎉 优势明显！' : diff >= 3 ? '😅 险胜，就差一口气！' : '⚖️ 毫厘之间定胜负！'
+  let dimTxt = ''
+  const n = Math.min(win.dims.length, lose.dims.length)
+  let best = null
+  for (let i = 0; i < n; i++) {
+    const gap = win.dims[i].score - lose.dims[i].score
+    if (!best || gap > best.gap) best = { gap, name: win.dims[i].name || lose.dims[i].name }
+  }
+  if (best && best.gap >= 5 && best.name) dimTxt = `「${best.name}」领先 ${best.gap} 分，是制胜关键。`
+  return `${tier} ${esc(win.accountName)} 以 ${win.totalScore} : ${lose.totalScore} 战胜 ${esc(lose.accountName)}。${dimTxt}`
+}
+
+/** 对战结算卡：胜者开车冲锋、败者倒退，逐维度拔河条 */
+function renderPkBattle(pk) {
+  const a = pk.challenger
+  const b = pk.opponent
+  const winSide = pk.winner === 'challenger' ? 'a' : pk.winner === 'opponent' ? 'b' : null
+  const scene = side => {
+    if (!winSide) return standScene('person')
+    return side === winSide ? carScene('rabbit') : walkScene('turtle')
+  }
+  const dimCount = Math.max(a.dims.length, b.dims.length)
+  const bars = Array.from({ length: dimCount }, (_, i) => {
+    const da = a.dims[i] || { name: b.dims[i]?.name || '', score: 0 }
+    const db = b.dims[i] || { name: da.name, score: 0 }
+    const name = da.name || db.name || `维度${i + 1}`
+    const total = Math.max(1, da.score + db.score)
+    const wa = (da.score / total) * 100
+    const sideA = da.score >= db.score ? 'pk-dim-win' : ''
+    const sideB = db.score > da.score ? 'pk-dim-win' : ''
+    return `
+    <div class="pk-dim">
+      <span class="pk-dim-score ${sideA}">${da.score}</span>
+      <div class="pk-dim-bar">
+        <div class="pk-dim-a ${sideA}" style="width:${wa}%"></div>
+        <div class="pk-dim-b ${sideB}" style="width:${100 - wa}%"></div>
+      </div>
+      <span class="pk-dim-score ${sideB}">${db.score}</span>
+      <div class="pk-dim-name">${esc(name)}</div>
+    </div>`
+  }).join('')
+  return `
+  <div class="pk-battle">
+    <div class="pk-versus">
+      <div class="pk-fighter ${winSide === 'a' ? 'pk-winner' : winSide ? 'pk-loser' : ''}">
+        <div class="pk-anim">${scene('a')}</div>
+        <div class="pk-f-name">${esc(a.accountName)}${winSide === 'a' ? ' 🏆' : ''}</div>
+        <div class="pk-f-score">${a.totalScore}</div>
+      </div>
+      <div class="pk-vs">VS</div>
+      <div class="pk-fighter ${winSide === 'b' ? 'pk-winner' : winSide ? 'pk-loser' : ''}">
+        <div class="pk-anim">${scene('b')}</div>
+        <div class="pk-f-name">${esc(b.accountName)}${winSide === 'b' ? ' 🏆' : ''}</div>
+        <div class="pk-f-score">${b.totalScore}</div>
+      </div>
+    </div>
+    <div class="pk-dims">${bars}</div>
+    <p class="pk-comment">${pkComment(pk)}</p>
+    <p class="muted small pk-time">${esc(a.modeLabel || '')} · 结算于 ${new Date(pk.finishedAt || pk.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</p>
+  </div>`
+}
+
+async function renderPkDialog() {
+  await Promise.all([renderPkCreate(), loadPks()])
+  renderPkList()
+}
+
+$('pkBtn').addEventListener('click', async () => {
+  $('pkDialog').classList.remove('hidden')
+  await renderPkDialog()
+})
+$('pkCloseBtn').addEventListener('click', () => $('pkDialog').classList.add('hidden'))
+$('pkDialog').addEventListener('click', e => {
+  if (e.target === $('pkDialog')) $('pkDialog').classList.add('hidden')
+})
+
+$('pkChallengeBtn').addEventListener('click', async () => {
+  const accId = $('pkAccount').value
+  const recId = $('pkRecord').value
+  if (!accId || !recId) { showError('请选择出战账号和记录'); return }
+  const btn = $('pkChallengeBtn')
+  btn.disabled = true
+  try {
+    // 记录必须已在云端：先静默推送一次，保证服务端能取到快照
+    await uploadAccount(accId)
+    const r = await fetch('api/pk', {
+      method: 'POST',
+      headers: pkHeaders(accId),
+      body: JSON.stringify({ accountId: accId, recordId: Number(recId) }),
+    })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(data.error || '发起失败')
+    await loadPks()
+    renderPkList()
+  } catch (err) {
+    showError('发起 PK 失败：' + err.message)
+  } finally {
+    btn.disabled = false
+  }
+})
+
+$('pkList').addEventListener('click', async e => {
+  const cancel = e.target.closest('[data-pk-cancel]')
+  if (cancel) {
+    const pk = pks.find(p => p.id === cancel.dataset.pkCancel)
+    if (!pk || !confirm('取消这场挑战？')) return
+    try {
+      const r = await fetch(`api/pk/${pk.id}/cancel`, {
+        method: 'POST',
+        headers: pkHeaders(pk.challenger.accountId),
+        body: JSON.stringify({ accountId: pk.challenger.accountId }),
+      })
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || '取消失败')
+      await loadPks()
+      renderPkList()
+    } catch (err) {
+      showError(err.message)
+    }
+    return
+  }
+  const accept = e.target.closest('[data-pk-accept]')
+  if (accept) {
+    // 应战：在按钮位置展开记录选择
+    const pkId = accept.dataset.pkAccept
+    const accId = $('pkAccount').value
+    if (!accId) { showError('请先在上方选择出战账号'); return }
+    const opts = await recordOptions(accId)
+    if (!opts) { showError('该账号还没有评测记录'); return }
+    const box = document.createElement('div')
+    box.className = 'pk-accept-box'
+    box.innerHTML = `
+      <select class="pk-accept-rec">${opts}</select>
+      <button class="btn primary small-btn pk-accept-ok">⚔️ 出战</button>
+      <button class="btn ghost small-btn pk-accept-no">收起</button>`
+    accept.replaceWith(box)
+    box.querySelector('.pk-accept-no').addEventListener('click', () => renderPkList())
+    box.querySelector('.pk-accept-ok').addEventListener('click', async () => {
+      try {
+        await uploadAccount(accId)
+        const r = await fetch(`api/pk/${pkId}/accept`, {
+          method: 'POST',
+          headers: pkHeaders(accId),
+          body: JSON.stringify({ accountId: accId, recordId: Number(box.querySelector('.pk-accept-rec').value) }),
+        })
+        const data = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(data.error || '应战失败')
+        await loadPks()
+        renderPkList()
+      } catch (err) {
+        showError('应战失败：' + err.message)
+      }
+    })
+  }
+})
 
 // =========================================================
 // 启动：迁移旧数据 -> 校验当前账号 -> 渲染
