@@ -839,6 +839,25 @@ footer { text-align: center; padding: 10px; }
 .group-row input { flex: 1; min-width: 0; }
 #groupLabel.in-group { color: var(--primary-ink); font-weight: 600; }
 
+/* ---------- 经典朗读样例 ---------- */
+.sample-entry-btn { margin-left: 8px; vertical-align: middle; }
+.sample-box { width: min(640px, 100%); }
+.sample-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.sample-item {
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raise);
+  cursor: pointer;
+}
+.sample-item:hover { background: var(--hover); border-color: var(--primary-soft); }
+.sample-title { font-size: 13px; font-weight: 700; }
+.sample-preview {
+  margin-top: 4px; line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
 /* ---------- 云端 PK 竞技场 ---------- */
 .pk-entry-btn { margin-left: 8px; vertical-align: middle; }
 .pk-box { width: min(560px, 100%); }

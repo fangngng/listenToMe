@@ -1,4 +1,5 @@
 /* ListenToMe 前端：录音/上传 -> 转写 -> 点评 -> 报告/历史 */
+import { SAMPLES } from './samples.js'
 
 const $ = id => document.getElementById(id)
 
@@ -53,15 +54,23 @@ modeTabs.forEach(t => t.addEventListener('click', () => setMode(t.dataset.mode))
 setMode('smart')
 
 const langBtns = document.querySelectorAll('.lang-btn')
-langBtns.forEach(b => b.addEventListener('click', () => {
-  lang = b.dataset.lang
-  langBtns.forEach(x => x.classList.toggle('active', x === b))
-}))
+function setLang(l) {
+  lang = l
+  langBtns.forEach(x => x.classList.toggle('active', x.dataset.lang === l))
+  updateRefCount()
+}
+langBtns.forEach(b => b.addEventListener('click', () => setLang(b.dataset.lang)))
 
-$('refText').addEventListener('input', e => {
-  const n = e.target.value.replace(/\s/g, '').length
-  $('refCount').textContent = `${n} 字`
-})
+function updateRefCount() {
+  const v = $('refText').value
+  if (lang === 'en') {
+    const n = (v.match(/[A-Za-z0-9']+/g) || []).length
+    $('refCount').textContent = `${n} 词`
+  } else {
+    $('refCount').textContent = `${v.replace(/\s/g, '').length} 字`
+  }
+}
+$('refText').addEventListener('input', updateRefCount)
 
 // =========================================================
 // 录音
@@ -1609,6 +1618,42 @@ function shareReport(report) {
     }
   }, 'image/png')
 }
+
+// =========================================================
+// 经典朗读样例（公版诗文，选中填入参考文本并切换语言）
+// =========================================================
+function renderSampleList() {
+  const groups = [['zh', '中文经典'], ['en', '英文经典']]
+  $('sampleList').innerHTML = groups.map(([g, label]) => `
+    <div class="section-title">${label}</div>
+    <div class="sample-grid">
+      ${SAMPLES.map((s, idx) => ({ s, idx })).filter(x => x.s.lang === g).map(({ s, idx }) => `
+        <button class="sample-item" data-sample="${idx}">
+          <div class="sample-title">${esc(s.title)} <span class="muted small">${esc(s.author)}</span></div>
+          <div class="sample-preview muted small">${esc(s.text.slice(0, 46))}…</div>
+        </button>`).join('')}
+    </div>`).join('')
+}
+
+$('sampleBtn').addEventListener('click', () => {
+  renderSampleList()
+  $('sampleDialog').classList.remove('hidden')
+})
+$('sampleCloseBtn').addEventListener('click', () => $('sampleDialog').classList.add('hidden'))
+$('sampleDialog').addEventListener('click', e => {
+  if (e.target === $('sampleDialog')) $('sampleDialog').classList.add('hidden')
+})
+$('sampleList').addEventListener('click', e => {
+  const item = e.target.closest('[data-sample]')
+  if (!item) return
+  const s = SAMPLES[Number(item.dataset.sample)]
+  if (!s) return
+  $('refText').value = s.text
+  $('refText').dispatchEvent(new Event('input'))
+  setLang(s.lang)
+  if (mode === 'dialog') setMode('smart')  // 样例是单人朗读文本，回到智能点评
+  $('sampleDialog').classList.add('hidden')
+})
 
 // =========================================================
 // 云端 PK 竞技场（跨设备对战：发起 -> 同组应战 -> 总分定胜负）

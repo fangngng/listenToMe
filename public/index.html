@@ -63,7 +63,9 @@
     <p class="mode-desc" id="modeDesc"></p>
 
     <div id="refWrap" class="field">
-      <label>参考文本（可选，填写后逐字对照纠错）<span id="refCount" class="muted">0 字</span></label>
+      <label>参考文本（可选，填写后逐字对照纠错）<span id="refCount" class="muted">0 字</span>
+        <button id="sampleBtn" class="btn ghost small-btn sample-entry-btn" title="从经典诗文中选择">📚 样例</button>
+      </label>
       <textarea id="refText" rows="5" placeholder="粘贴课文、诗文或任意需要朗读的文本…"></textarea>
     </div>
 
@@ -142,6 +144,18 @@
     </div>
     <div id="mergeList"></div>
     <button id="mergeConfirmBtn" class="btn primary wide-btn" style="margin-top:8px">合并</button>
+  </div>
+</div>
+
+<!-- 经典朗读样例弹层 -->
+<div id="sampleDialog" class="modal hidden">
+  <div class="card modal-box sample-box">
+    <div class="report-header">
+      <h2>📚 经典朗读样例</h2>
+      <button id="sampleCloseBtn" class="icon-btn" title="关闭">✕</button>
+    </div>
+    <p class="muted small">均为公版诗文，点击即填入参考文本并自动切换对应语言。</p>
+    <div id="sampleList"></div>
   </div>
 </div>
 
