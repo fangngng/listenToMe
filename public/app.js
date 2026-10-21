@@ -3,6 +3,77 @@ import { SAMPLES } from './samples.js'
 
 const $ = id => document.getElementById(id)
 
+// ---------- 图标：系统 emoji 统一替换为 Fluent Emoji 3D（public/emoji/，跨平台一致、更生动） ----------
+// 键为界面中出现的 emoji 字符（含带/不带变体选择符两种写法）
+const EMOJI_ICON = {
+  '☁️': 'cloud', '⚔️': 'crossed-swords', '🗣️': 'speaking-head', '🗣': 'speaking-head',
+  '🏆': 'trophy', '🎧': 'headphone', '⬆️': 'up-arrow', '⬇️': 'down-arrow', '➡️': 'right-arrow',
+  '🔀': 'shuffle-tracks', '📚': 'books', '👍': 'thumbs-up', '🎯': 'direct-hit',
+  '🎙️': 'studio-microphone', '🎙': 'studio-microphone', '🧠': 'brain', '🤝': 'handshake',
+  '🚩': 'triangular-flag', '😅': 'grinning-face-with-sweat', '🕘': 'nine-oclock', '🔥': 'fire',
+  '📤': 'outbox-tray', '📝': 'memo', '📜': 'scroll', '📈': 'chart-increasing', '📁': 'file-folder',
+  '💨': 'dashing-away', '👤': 'bust-in-silhouette', '👑': 'crown', '🐰': 'rabbit-face', '🐢': 'turtle',
+  '🎉': 'party-popper', '🌐': 'globe-with-meridians', '➕': 'plus', '❌': 'cross-mark',
+  '✨': 'sparkles', '✏️': 'pencil', '✅': 'check-mark-button', '⚠️': 'warning',
+  '⚖️': 'scale', '⚖': 'scale', '⏹️': 'stop-button', '⏹': 'stop-button',
+  '⏱️': 'stopwatch', '⏱': 'stopwatch', '⏸️': 'pause-button', '⏸': 'pause-button',
+}
+const EMOJI_RE = new RegExp(
+  Object.keys(EMOJI_ICON).map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g')
+
+/** 把文本节点里的 emoji 换成 <img class="emo">（title/placeholder 等属性与 canvas 不受影响） */
+function emojifyNode(node) {
+  const text = node.nodeValue
+  EMOJI_RE.lastIndex = 0
+  if (!EMOJI_RE.test(text)) return
+  // test() 会推进 lastIndex，而 matchAll 克隆当前 lastIndex——不归零会漏掉首个 emoji 导致替换不收敛
+  EMOJI_RE.lastIndex = 0
+  const frag = document.createDocumentFragment()
+  let last = 0
+  for (const m of text.matchAll(EMOJI_RE)) {
+    if (m.index > last) frag.append(text.slice(last, m.index))
+    const img = document.createElement('img')
+    img.className = 'emo'
+    img.src = `emoji/${EMOJI_ICON[m[0]]}.png`
+    img.alt = m[0]
+    img.draggable = false
+    frag.append(img)
+    last = m.index + m[0].length
+  }
+  if (last < text.length) frag.append(text.slice(last))
+  node.parentNode?.replaceChild(frag, node)
+}
+
+function emojifyRoot(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      const p = n.parentElement
+      if (!p || p.closest('script,style,textarea,title,.no-emo')) return NodeFilter.FILTER_REJECT
+      EMOJI_RE.lastIndex = 0
+      return EMOJI_RE.test(n.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
+    },
+  })
+  const targets = []
+  while (walker.nextNode()) targets.push(walker.currentNode)
+  for (const t of targets) emojifyNode(t)
+}
+
+// 动态渲染的内容（报告/历史/排行榜…）插入 DOM 后自动替换
+const emoObserver = new MutationObserver(muts => {
+  for (const m of muts) {
+    if (m.type === 'characterData') {
+      if (m.target.nodeType === 3) emojifyNode(m.target)
+    } else {
+      for (const n of m.addedNodes) {
+        if (n.nodeType === 1) emojifyRoot(n)
+        else if (n.nodeType === 3) emojifyNode(n)
+      }
+    }
+  }
+})
+emojifyRoot(document.body)
+emoObserver.observe(document.body, { childList: true, subtree: true, characterData: true })
+
 const MODES = {
   smart: { label: '智能点评', desc: '粘贴参考文本 → 逐字对照纠错；只填主题 → 演讲维度点评；都不填 → 综合点评' },
   dialog: { label: '对话互动', desc: '两人真实对话录音，点评倾听回应、互动节奏与氛围（AI 按内容推断说话人）' },
@@ -11,6 +82,7 @@ const STATUS_TEXT = {
   upload: '正在上传音频…',
   transcribe: '正在转写语音（约需 10-40 秒）…',
   analyze: 'AI 教练正在聆听与点评…',
+  pronounce: '讯飞引擎正在逐音素打分…',
 }
 const MAX_REC_SEC = 600
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -291,6 +363,74 @@ function resetAudioURL() {
 $('reRecordBtn').addEventListener('click', resetReady)
 
 $('analyzeBtn').addEventListener('click', analyze)
+
+// ---------- 发音检查（讯飞 ISE：词/音素级打分，与 AI 点评互补） ----------
+$('pronounceBtn').addEventListener('click', async () => {
+  if (!audioBlob) return
+  const ref = $('refText').value.trim()
+  if (mode !== 'smart' || !ref) {
+    showError('发音检查需要在智能点评模式下粘贴参考文本')
+    return
+  }
+  hideError()
+  const btn = $('pronounceBtn')
+  btn.disabled = true
+  setStatus('pronounce')
+  try {
+    const fd = new FormData()
+    fd.append('audio', audioBlob, audioBlob.name || 'audio.wav')
+    fd.append('refText', ref)
+    fd.append('lang', lang)
+    const r = await fetch('api/pronounce', { method: 'POST', body: fd })
+    const d = await r.json()
+    if (!r.ok) throw new Error(d.error || '发音检查失败')
+    renderPronounce(d.result, ref)
+  } catch (e) {
+    showError(e.message || String(e))
+  } finally {
+    clearStatus()
+    btn.disabled = false
+  }
+})
+$('closePronounceBtn').addEventListener('click', () => $('pronounceCard').classList.add('hidden'))
+
+function pronSpan(ch, w) {
+  if (!w || !w.err) {
+    return w?.score != null && w.score < 60
+      ? `<span class="pchar wrong" data-hyp="${w.score}分" title="发音得分 ${w.score}">${esc(ch)}</span>`
+      : esc(ch)
+  }
+  if (w.err === 'omit') return `<span class="pchar missed" title="漏读">${esc(ch)}</span>`
+  return `<span class="pchar wrong" data-hyp="${esc(w.detail || w.err)}" title="${esc(w.detail || '')}">${esc(ch)}</span>`
+}
+
+function renderPronounce(r, ref) {
+  $('pronounceCard').classList.remove('hidden')
+  const d = r.dims || {}
+  const chips = [
+    r.total != null ? `🎯 总分 ${r.total}` : null,
+    d.accuracy != null ? `准确度 ${d.accuracy}` : null,
+    d.fluency != null ? `流畅度 ${d.fluency}` : null,
+    d.integrity != null ? `完整度 ${d.integrity}` : null,
+    d.phone != null ? `声韵 ${d.phone}` : null,
+    d.tone != null ? `调型 ${d.tone}` : null,
+  ].filter(Boolean).map(c => `<span class="chip">${c}</span>`).join('')
+  const words = r.words || []
+  let k = 0
+  const html = lang === 'en'
+    ? String(ref).split(/([A-Za-z0-9']+)/).map(tok =>
+        /^[A-Za-z0-9']+$/.test(tok) ? pronSpan(tok, words[k++]) : esc(tok)).join('')
+    : [...ref].map(ch => (/[一-鿿]/.test(ch) ? pronSpan(ch, words[k++]) : esc(ch))).join('')
+  const errs = words.filter(w => w.err)
+  $('pronounceBody').innerHTML = `
+    <div class="metric-chips">${chips || '<span class="chip">未返回分数</span>'}</div>
+    ${r.rejected ? '<p class="pk-comment">未检测到有效朗读声，请对着麦克风清晰朗读后重试。</p>' : ''}
+    <p class="pron-text">${html}</p>
+    ${errs.length
+      ? `<p class="muted small">检出 ${errs.length} 处发音问题：${errs.slice(0, 12).map(w => `「${esc(w.w)}」${esc(w.detail || w.err)}`).join('；')}</p>`
+      : '<p class="muted small">未检出明显发音错误</p>'}`
+  $('pronounceCard').scrollIntoView({ behavior: 'smooth' })
+}
 
 async function analyze() {
   if (!audioBlob) return

@@ -839,6 +839,21 @@ footer { text-align: center; padding: 10px; }
 .group-row input { flex: 1; min-width: 0; }
 #groupLabel.in-group { color: var(--primary-ink); font-weight: 600; }
 
+/* ---------- 发音检查（讯飞 ISE） ---------- */
+.pron-text { font-size: 17px; line-height: 2.2; margin: 12px 0 8px; }
+.pron-text .pchar { min-width: 1.2em; }
+
+/* ---------- Fluent Emoji 3D 图标（替代系统 emoji） ---------- */
+img.emo {
+  width: 1.15em;
+  height: 1.15em;
+  display: inline-block;
+  vertical-align: -0.22em;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* ---------- 经典朗读样例 ---------- */
 .sample-entry-btn { margin-left: 8px; vertical-align: middle; }
 .sample-box { width: min(640px, 100%); }

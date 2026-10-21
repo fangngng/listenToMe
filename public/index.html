@@ -89,12 +89,22 @@
       <audio id="previewAudio" controls></audio>
       <div class="ready-actions">
         <button id="reRecordBtn" class="btn ghost">↺ 重录 / 换文件</button>
+        <button id="pronounceBtn" class="btn ghost">🔤 发音检查</button>
         <button id="analyzeBtn" class="btn primary">✨ 开始分析</button>
       </div>
     </div>
 
     <div id="statusLine" class="hidden"><span class="spinner"></span><span id="statusText"></span></div>
     <div id="errorBox" class="hidden"></div>
+  </section>
+
+  <!-- 发音检查面板（讯飞 ISE） -->
+  <section class="card hidden" id="pronounceCard">
+    <div class="report-header">
+      <h2>🔤 发音检查 <span class="muted small">讯飞语音评测 · 词/音素级</span></h2>
+      <button id="closePronounceBtn" class="btn ghost small-btn">收起</button>
+    </div>
+    <div id="pronounceBody"></div>
   </section>
 
   <!-- 报告面板 -->

@@ -744,6 +744,178 @@ app.get('/api/pk/:id', (req, res) => {
 })
 
 // =========================================================
+// 讯飞语音评测 ISE（发音检查：词/音素级打分，WebSocket 流式）
+// 文档：https://www.xfyun.cn/doc/Ise/IseAPI.html
+// =========================================================
+const ISE_HOST = 'ise-api.xfyun.cn'
+const ISE_PATH = '/v2/open-ise'
+
+function iseUrl() {
+  const date = new Date().toUTCString()
+  const signatureOrigin = `host: ${ISE_HOST}\ndate: ${date}\nGET ${ISE_PATH} HTTP/1.1`
+  const signature = crypto.createHmac('sha256', process.env.XFYUN_API_SECRET || '')
+    .update(signatureOrigin).digest('base64')
+  const authorizationOrigin = `api_key="${process.env.XFYUN_API_KEY}",algorithm="hmac-sha256",headers="host date request-line",signature="${signature}"`
+  const authorization = Buffer.from(authorizationOrigin).toString('base64')
+  return `wss://${ISE_HOST}${ISE_PATH}?authorization=${encodeURIComponent(authorization)}&host=${ISE_HOST}&date=${encodeURIComponent(date)}`
+}
+
+/** WAV(PCM16/16k/mono) -> raw PCM；格式不符返回 null */
+function wavToPcm(buf) {
+  if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') return null
+  let off = 12
+  let fmt = null
+  let data = null
+  while (off + 8 <= buf.length) {
+    const id = buf.toString('ascii', off, off + 4)
+    const size = buf.readUInt32LE(off + 4)
+    if (id === 'fmt ') {
+      fmt = {
+        format: buf.readUInt16LE(off + 8), channels: buf.readUInt16LE(off + 10),
+        rate: buf.readUInt32LE(off + 12), bits: buf.readUInt16LE(off + 22),
+      }
+    }
+    if (id === 'data') data = { start: off + 8, size }
+    off += 8 + size + (size % 2)
+  }
+  if (!fmt || !data) return null
+  if (fmt.format !== 1 || fmt.channels !== 1 || fmt.rate !== 16000 || fmt.bits !== 16) return null
+  return buf.subarray(data.start, data.start + data.size)
+}
+
+const ISE_DP = { 16: ['omit', '漏读'], 32: ['insert', '增读'], 64: ['repeat', '回读'], 128: ['replace', '替换读'] }
+
+/** 解析评测结果 XML（结构固定，正则轻量解析）：总分/维度分 + 逐字词错误与分数 */
+function parseIseXml(xml) {
+  const attr = (s, k) => {
+    const m = s.match(new RegExp(`${k}="([^"]*)"`))
+    return m ? m[1] : null
+  }
+  const paper = xml.match(/<rec_paper>[\s\S]*?<read_sentence\b([^>]*)>/)
+  const dims = {}
+  if (paper) {
+    for (const k of ['accuracy_score', 'fluency_score', 'integrity_score', 'emotion_score', 'phone_score', 'tone_score', 'total_score']) {
+      const v = attr(paper[1], k)
+      if (v != null) dims[k.replace('_score', '')] = Math.round(Number(v))
+    }
+  }
+  const rejected = paper ? attr(paper[1], 'is_rejected') === 'true' : false
+  const words = []
+  for (const wm of xml.matchAll(/<word\b([^>]*)>([\s\S]*?)<\/word>/g)) {
+    const w = attr(wm[1], 'content') || ''
+    const scoreAttr = attr(wm[1], 'accuracy_score') ?? attr(wm[1], 'total_score')
+    let err = null
+    let detail = ''
+    for (const sm of wm[2].matchAll(/<syll\b([^>]*)/g)) {
+      const dp = Number(attr(sm[1], 'dp_message') || 0)
+      if (dp && ISE_DP[dp]) { [err, detail] = ISE_DP[dp]; break }
+    }
+    if (!err) {
+      for (const pm of wm[2].matchAll(/<phone\b([^>]*)/g)) {
+        const dp = Number(attr(pm[1], 'dp_message') || 0)
+        if (dp && ISE_DP[dp]) { [err, detail] = ISE_DP[dp]; break }
+        const perr = Number(attr(pm[1], 'perr_msg') || 0)
+        if (perr) {
+          const ph = attr(pm[1], 'content') || ''
+          err = 'mispron'
+          detail = attr(pm[1], 'is_yun') === '0'
+            ? `声母"${ph}"错`
+            : perr === 2 ? `"${ph}"声调错` : perr === 3 ? `"${ph}"韵母+声调错` : `韵母"${ph}"错`
+          break
+        }
+      }
+    }
+    words.push({ w, score: scoreAttr != null ? Math.round(Number(scoreAttr)) : null, err, detail })
+  }
+  return { total: dims.total ?? null, dims, rejected, words }
+}
+
+/** 流式调用 ISE：ssb 参数帧 -> 逐帧音频（以服务端回执做流控）-> status=2 取最终结果 */
+function callIse(pcm, { lang, refText }) {
+  return new Promise((resolve, reject) => {
+    if (!process.env.XFYUN_APP_ID || !process.env.XFYUN_API_KEY || !process.env.XFYUN_API_SECRET) {
+      return reject(new Error('服务端未配置讯飞 ISE 密钥（XFYUN_APP_ID/API_KEY/API_SECRET）'))
+    }
+    const ws = new WebSocket(iseUrl())
+    const text = lang === 'en' ? `[content]\n${refText}` : refText
+    const frames = []
+    for (let i = 0; i < pcm.length; i += 1280) frames.push(pcm.subarray(i, i + 1280))
+    if (!frames.length) frames.push(Buffer.alloc(0))
+    let fi = 0
+    let settled = false
+    const fail = e => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { ws.close() } catch {}
+      reject(e)
+    }
+    const timer = setTimeout(() => fail(new Error('发音检查超时（90 秒）')), 90000)
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        common: { app_id: process.env.XFYUN_APP_ID },
+        business: {
+          cmd: 'ssb', aue: 'raw', category: 'read_sentence',
+          ent: lang === 'en' ? 'en_vip' : 'cn_vip', sub: 'ise',
+          ttp_skip: true, rstcd: 'utf8', rst: 'entirety', plev: '0',
+          text: '﻿' + text,
+        },
+        data: { status: 0 },
+      }))
+    }
+    ws.onmessage = ev => {
+      let msg
+      try { msg = JSON.parse(ev.data) } catch { return }
+      if (msg.code !== 0) return fail(new Error(`讯飞评测返回 ${msg.code}：${msg.message || ''}`))
+      if (fi < frames.length) {
+        const last = fi === frames.length - 1
+        ws.send(JSON.stringify({
+          business: { cmd: 'auw', aus: last ? 4 : fi === 0 ? 1 : 2 },
+          data: { status: last ? 2 : 1, data: Buffer.from(frames[fi]).toString('base64') },
+        }))
+        fi++
+        return
+      }
+      if (msg.data?.status === 2) {
+        settled = true
+        clearTimeout(timer)
+        try { ws.close() } catch {}
+        try {
+          resolve(parseIseXml(Buffer.from(msg.data.data, 'base64').toString('utf8')))
+        } catch (e) {
+          reject(new Error('评测结果解析失败：' + e.message))
+        }
+      }
+    }
+    ws.onerror = () => fail(new Error('发音检查连接失败（讯飞 WebSocket）'))
+    ws.onclose = () => fail(new Error('发音检查连接提前关闭'))
+  })
+}
+
+app.post('/api/pronounce', rateLimit(30, 60 * 1000), (req, res, next) => {
+  upload.single('audio')(req, res, err => {
+    if (err) return res.status(400).json({ error: err.message })
+    next()
+  })
+}, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: '缺少音频文件' })
+    const lang = req.body?.lang === 'en' ? 'en' : 'zh'
+    const refText = String(req.body?.refText || '').trim()
+    if (!refText) return res.status(400).json({ error: '发音检查需要参考文本' })
+    const pcm = wavToPcm(req.file.buffer)
+    if (!pcm) return res.status(415).json({ error: '发音检查暂仅支持 16kHz/16bit/单声道 WAV 录音音频（上传的 mp3 等请先录音重试）' })
+    if (pcm.length < 16000) return res.status(422).json({ error: '音频过短（至少 0.5 秒）' })
+    if (pcm.length > 16000 * 2 * 300) return res.status(413).json({ error: '音频超过讯飞 5 分钟上限' })
+    const result = await callIse(pcm, { lang, refText })
+    res.json({ result })
+  } catch (err) {
+    console.error('[pronounce]', err)
+    res.status(502).json({ error: '发音检查失败：' + err.message })
+  }
+})
+
+// =========================================================
 // 文本工具
 // =========================================================
 const FILLER_WORDS = [

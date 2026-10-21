@@ -142,7 +142,22 @@
 - 点击样例：填入参考文本、自动 `setLang` 切换中/EN（对话模式下自动回智能点评）、字数统计随语言切换（中文按字、英文按词）
 - PWA：samples.js 纳入 SW 缓存清单（ltm-v5）
 
-### 3.17 后续迭代（v2+，不在 MVP 内）
+### 3.17 图标升级：Fluent Emoji 3D（v1.6 已实现）
+- 界面所有系统 emoji 替换为 Microsoft Fluent Emoji 3D PNG（MIT 协议，41 个，`public/emoji/`，共约 1.3MB）；下载脚本 `scripts/fetch-emoji.mjs`（raw.githubusercontent.com，jsDelivr 被墙；3D 风格官方仅 PNG；含重试与文件名特例）
+- 替换机制：`app.js` 内 EMOJI_ICON 字符→slug 映射 + TreeWalker 文本节点替换为 `<img class="emo">`；MutationObserver 监听 childList/characterData，动态渲染（报告/历史/排行榜/PK/样例）自动生效；模板字符串零改动
+- 不替换范围：title/placeholder 等属性、分享卡 canvas（fillText 仍系统 emoji）、纯文本符号（✕ ▶ → 等）
+- 注意：替换函数必须保证正则 lastIndex 归零（test 后 matchAll 前），否则首个 emoji 漏替换导致 Observer 无限循环（曾冻死页面，已修复）
+- 缓存：PNG 走 SW stale-while-revalidate 按需缓存（不预加载）；外壳版本升 ltm-v6
+
+### 3.18 发音检查：讯飞 ISE 接入（v1.6 已实现）
+- 就绪面板「🔤 发音检查」：`POST /api/pronounce`（audio + refText + lang）代理讯飞语音评测 ISE（WebSocket `wss://ise-api.xfyun.cn/v2/open-ise`，HMAC-SHA256 URL 签名；密钥存 `.env` 的 `XFYUN_APP_ID/API_KEY/API_SECRET`）
+- 协议：ssb 参数帧（ent=cn_vip/en_vip、category=read_sentence、aue=raw、ttp_skip、rst=entirety、plev=0、text 带 UTF-8 BOM，英文加 `[content]` 节点）→ 1280B/帧流式上传（以服务端回执做流控，不受实时率限制）→ status=2 取 base64 XML 结果
+- 结果解析（正则轻量解析固定结构）：rec_paper 维度分（accuracy/fluency/integrity/emotion/phone/tone/total）+ 逐 word 节点（score、syll/phone 的 dp_message：16 漏读/32 增读/64 回读/128 替换；phone 的 perr_msg+is_yun 定位声母/韵母/声调错误）
+- 前端：分数芯片 + 参考文本逐字着色（误读红标+错误详情、漏读虚线）+ 问题清单；is_rejected 时提示未检测到朗读声；与 ASR+LLM 点评互补（ISE 测发音声学，LLM 评表达内容）
+- 限制：仅 16kHz/16bit/mono WAV（录音音频；上传 mp3 等返回 415 提示）；讯飞单会话 ≤5 分钟；免费额度每日 500 次
+- 测试：`node test-pronounce.mjs`（正弦波验证协议全链路；非人声预期 rejected/低分）
+
+### 3.19 后续迭代（v2+，不在 MVP 内）
 - 发音音素级评分（专业语音评测服务）
 - 跟读对比：原声示范 + 用户模仿打分
 - 练习目标与打卡

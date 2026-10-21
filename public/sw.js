@@ -1,5 +1,5 @@
 // PWA Service Worker：外壳资源 stale-while-revalidate（先回缓存、后台更新）；API 与音频上传绝不缓存
-const V = 'ltm-v5'
+const V = 'ltm-v6'
 const ASSETS = ['./', './app.js', './samples.js', './style.css', './pcm-worklet.js', './manifest.webmanifest', './icon-192.png', './icon-512.png']
 
 self.addEventListener('install', e => {
